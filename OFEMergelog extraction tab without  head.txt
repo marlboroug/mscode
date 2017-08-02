@@ -1,0 +1,2336 @@
+REFERENCE @"D:\users\t-kejia\documents\visual studio 2015\Projects\getOFEdata\getOFEdata\CallHashPartition.dll";
+REFERENCE @"D:\users\t-kejia\documents\visual studio 2015\Projects\getOFEdata\getOFEdata\ICSharpCode.SharpZipLib.dll";
+//Script GUID:5c8a971f-4b41-4551-b547-e6b4610f975b
+//Used for tracking history
+// Get Training Data From OFEMergeLog
+USING AEther.Extractions.Scope REFERENCE "AEther.Extractions.Scope.dll";
+USING Aether.Feature.ScopeBin REFERENCE "AEtherCustomExtractor.dll";
+RESOURCE  "ICSharpCode.SharpZipLib.dll",
+           "CallHashPartition.dll",
+           "ComputeHashPartition.dll";        
+REFERENCE "Microsoft.Bing.HashUtil.dll";
+
+//#DECLARE SourcePath string = "D:\\";
+//#DECLARE StartDate string = "2016-09-06";
+//#DECLARE EndDate string = "2016-09-07";
+//#DECLARE QueryLogDate string = "?date=("+@StartDate+")...("+@EndDate+")&sparsestreamset=true";
+//#DECLARE logInFile string = @SourcePath+"OFEMergedLog_%Y-%m-%d"+@QueryLogDate; 
+//#DECLARE rawloginOutput string = @"D:\testOFEMergeLog\OFEMergedLog_rawlogin.tsv";
+//#DECLARE ifmDedupeOutput string = @"D:\testOFEMergeLog\OFEMergedLog_ifmDedup.tsv";
+//#DECLARE debugOutput string = @"D:\testOFEMergeLog\OFEMergedLog_RawIFMNoFeatur.tsv";
+//#DECLARE featureCountOutput string = @"D:\testOFEMergeLog\OFEMergedLog_featureCount.tsv";
+//#DECLARE headerOutput string = @"D:\testOFEMergeLog\OFEMergedLog_header.tsv";
+//#DECLARE keepReduceFile string = @"D:\testOFEMergeLog\OFEMergedLog_KeepReduce.tsv";
+//#DECLARE resultOutput string = @"D:\testOFEMergeLog\OFEMergedLog_TSV0.tsv";
+//#DECLARE compressOutput string = @"D:\testOFEMergeLog\OFEMergedLog_extraction.tsv";
+
+#DECLARE logInFile string = "/local/users/t-kejia/VirtualMatching/OFEMergeLog/OFEMergeLog_2016"; 
+//#DECLARE rawloginOutput string = "/local/users/t-kejia/VirtualMatching/OFEMergeLog/data/rawloginOutput.tsv";
+#DECLARE debugOutput string =  "/local/users/t-kejia/VirtualMatching/OFEMergeLog/data/debugOutput.tsv";
+#DECLARE ifmDedupeOutput string =  "/local/users/t-kejia/VirtualMatching/OFEMergeLog/data/ifmDedupeOutput.tsv";
+#DECLARE featureCountOutput string = "/local/users/t-kejia/VirtualMatching/OFEMergeLog/data/featureCountOutput.tsv";
+#DECLARE headerOutput string = "/local/users/t-kejia/VirtualMatching/OFEMergeLog/data/headerOutput.tsv";
+#DECLARE keepReduceFile string = "/local/users/t-kejia/VirtualMatching/OFEMergeLog/data/keepReduceFile.tsv";
+#DECLARE resultOutput string = "/local/users/t-kejia/VirtualMatching/OFEMergeLog/data/resultOutput.tsv";
+#DECLARE compressOutput string = "/local/users/t-kejia/VirtualMatching/OFEMergeLog/data/compressOutput.tsv";
+
+RESOURCE @"KeepReduce.txt";
+// Extract IFM infomation
+
+RawIFM= EXTRACT Query,Murl,Purl,FeatureCount,FeatureVector
+FROM @logInFile 
+USING MergeLogReduceExtractor(); // https://cosmos09.osdinfra.net/cosmos/searchRelevance.aether.store/local/XPdiExtraction/Result/1122888050/EQIFM.log_bucket16?property=info
+//OUTPUT TO @rawloginOutput;// https://cosmos09.osdinfra.net/cosmos/SegmentRelevance/users/yubao/RawIFM.txt?property=info
+
+RawIFMNoFeature=SELECT Query, Murl, Purl, FeatureCount
+FROM RawIFM;
+OUTPUT RawIFMNoFeature TO @debugOutput;
+
+//// Dedup and try to keep the one has biggest number of feature values
+//// remove dedup logic for MM
+IFM=REDUCE RawIFM
+ON Query, Murl, Purl
+PRODUCE Query, Murl, Purl, FeatureVector
+USING MergeLogDedupReducer;
+OUTPUT TO @ifmDedupeOutput;
+
+// Produce Feature Headers, and reduce some features
+IFMHeaders=PROCESS IFM
+PRODUCE Header, HeaderCount
+USING RetriveHeaderProcessorLocal;
+
+// Count Herder number
+SELECT Header, SUM(HeaderCount) AS HeaderCount
+GROUP BY Header
+ORDER BY HeaderCount DESC, Header ASC;
+OUTPUT TO @featureCountOutput;
+
+// Append flag for header dedup
+IFMHeaders = SELECT "1" AS ReduceFlag, Header, HeaderCount FROM IFMHeaders; 
+
+// Dedup Header and put them on one line
+// The headers are sorted with "m:" first and "bigger count" first
+// When finally generate features, we can trim the end for each extraction end line
+// Because of moving "important" features ahead, this will help to reduce size of extraction file
+ReducedHeader = REDUCE IFMHeaders ON ReduceFlag
+USING MergeSortedHeaderReducer;
+OUTPUT TO @headerOutput;
+
+// expend to N pieces
+DuplicatedHeader= PROCESS ReducedHeader
+USING DupHeaderProcessorLocal
+PRODUCE Idx, Header;
+OUTPUT TO @keepReduceFile;
+
+// convert key=value to TSV format
+IFM = SELECT (long) 1 AS Idx, IFM.*  FROM IFM;
+
+TSV0=COMBINE IFM WITH DuplicatedHeader 
+ON IFM.Idx == DuplicatedHeader.Idx 
+USING MergeLogExtractionKV2TSVCombiner;
+OUTPUT TO @resultOutput;// https://cosmos09.osdinfra.net/cosmos/SegmentRelevance/users/yubao/TSV0.txt?property=info
+OUTPUT TSV0 TO @compressOutput  ORDER BY Query
+USING ExtractionOutputterLocal("compress=true");
+
+
+
+
+
+
+
+
+
+
+
+
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Text;
+using ScopeRuntime;
+using Aether.Feature.ScopeBin;
+using CallHashPartition;
+
+//namespace AEther.Extractions.Scope
+//{
+    public class HrsFeatureVectorExtractor : Extractor
+    {
+        public override Schema Produces(string[] columns, string[] args)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("UrlHash", ColumnDataType.String));
+            schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+            return schema;
+        }
+
+        public override IEnumerable<Row> Extract(StreamReader reader, Row output, string[] args)
+        {
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                long queryId;
+                string url;
+                string FeatureVector;
+
+                if (ParseLine(line, out queryId, out url, out FeatureVector))
+                {
+                    StringBuilder urlhash = new StringBuilder(4096);
+
+                    if (RefComm.ComputeHash(url, urlhash))
+                    {
+                        output["QueryId"].Set(queryId);
+                        output["UrlHash"].Set(urlhash.ToString());
+                        output["FeatureVector"].Set(FeatureVector);
+                        yield return output;
+                    }
+                }
+            }
+        }
+
+        // hrs format:
+        // market\tqueryId\tquery\trating\turl\tdate\tKey=Value\tKey=Value....
+        private bool ParseLine(string line, out long qid, out string url, out string featureVector)
+        {
+            url = featureVector = String.Empty;
+            qid = -1;
+            try
+            {
+                line = line.TrimStart();
+                if (line.StartsWith("#"))
+                {
+                    //  Comment line
+                    return false;
+                }
+
+                string[] tokens = line.Split('\t');
+                if (tokens.Length < 5)
+                {
+                    return false;
+                }
+
+                if (!long.TryParse(tokens[1], out qid))
+                {
+                    return false;
+                }
+
+                if (qid < 0)
+                {
+                    return false;
+                }
+
+                url = tokens[4];
+                if (url == null)
+                {
+                    return false;
+                }
+                else
+                {
+                    // If somehow urls in HRS have surrounding whitespaces, trim them,
+                    // so url hash can be calculated correctly.
+                    url = url.Trim();
+                }
+
+                if (String.IsNullOrEmpty(url))
+                {
+                    return false;
+                }
+
+                string market = tokens[0];
+                string query = tokens[2];
+                string rating = tokens[3];
+                string date = tokens.Length >= 6 ? tokens[5] : String.Empty;
+                string resultType = "";
+                if (rating == "Unjudged")
+                {
+                    resultType = "RatedNRandom";
+                }
+                else
+                {
+                    resultType = "RatedN";
+                }
+                featureVector = string.Format("m:QueryId={0}\tm:Url={1}\tm:Query={2}\tm:Market={3}\tm:Rating={4}\tm:CanonicalQuery={5}\tm:Date={6}\tm:ResultType={7}", qid, url, query, market, rating, query, date, resultType);
+                //Append other HRS headers
+                for (int i = 6; i < tokens.Length; i++)
+                {
+                    int idx = tokens[i].IndexOf('=');
+                    if (idx > 0)
+                    {
+                        // do feature verification
+                        // assume with format: key=value\tkey=value
+                        try
+                        {
+                            // check feature values which should be number.
+                            if (!tokens[i].StartsWith("m:"))
+                            {
+                                long.Parse(tokens[i].Substring(idx + 1));
+                            }
+                            featureVector += "\t" + tokens[i];
+                        }
+                        catch (Exception)
+                        {
+
+                        }
+                    }
+                }
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+    } // end of class: HrsExtractor
+
+    public class IFMLogParser
+    {
+        // log format:
+        // Date IS=machineId Hash=XXX Url=uuuu docId=XXX query=[... contact:bingindexserveeqextractionjobid-XXX-qid-XXX ...]
+        // eqismsg::<DocumentFeatures.FeatureVector./>
+        public static bool ParseLine(string line, out long qid, out string url, out string urlHash, out long docId,
+                            out string machineId, out string jobId, out string featureVector, out string errorMessage)
+        {
+            errorMessage = string.Empty;
+
+            const string FeatureStartTag = " eqismsg::<DocumentFeatures";
+            const string FeatureEndTag = "/>";
+            const string NewFeatureEndTag = ">";
+
+            const string JobIdTag = "bingindexserveeqextractionjobid-";
+            const string QueryIdTag = "-qid-";
+
+            string docUrlHash16B = String.Empty;
+            urlHash = url = machineId = jobId = featureVector = string.Empty;
+            qid = -1;
+            docId = -1;
+            try
+            {
+                url = PickValue(line, "Url");
+                machineId = PickValue(line, "IS");
+                urlHash = PickValue(line, "UrlHash16B", false);
+                docUrlHash16B = PickValue(line, "DocUrlHash16B");
+
+                string docIdString = PickValue(line, "docId", false);
+                docId = long.Parse(docIdString, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
+                // Get job id and query id in contact value.
+                int jobidIndex = line.IndexOf(JobIdTag, StringComparison.OrdinalIgnoreCase);
+                if (jobidIndex < 0)
+                {
+                    errorMessage = string.Format("cannot find tag: {0}, in EQIFM value {1}", JobIdTag, line);
+                    return false;
+                }
+
+                int valueEndIndex = line.IndexOfAny(" ]".ToCharArray(), jobidIndex + JobIdTag.Length);
+                string jobIdAndQueryIdString = line.Substring(jobidIndex, valueEndIndex - jobidIndex);
+
+                jobidIndex = 0;
+                int queryIdIndex = jobIdAndQueryIdString.IndexOf(QueryIdTag, StringComparison.OrdinalIgnoreCase);
+                if (queryIdIndex < 0)
+                {
+                    errorMessage = string.Format("cannot find tag: {0}, in value {1}", QueryIdTag, jobIdAndQueryIdString);
+                    return false;
+                }
+
+                jobId = jobIdAndQueryIdString.Substring(jobidIndex + JobIdTag.Length, queryIdIndex - jobidIndex - JobIdTag.Length);
+
+                string queryIdString = jobIdAndQueryIdString.Substring(queryIdIndex + QueryIdTag.Length);
+                qid = long.Parse(queryIdString);
+
+                if (qid < 0)
+                {
+                    errorMessage = string.Format("queryid is negative");
+                    return false;
+                }
+
+                int featureIndex = line.IndexOf(FeatureStartTag, StringComparison.OrdinalIgnoreCase);
+                if (featureIndex < 0)
+                {
+                    errorMessage = string.Format("cannot find tag: {0}, in line {1}", FeatureStartTag, line);
+                    return false;
+                }
+
+                featureVector = line.Substring(featureIndex + FeatureStartTag.Length)
+                                    .Replace("\"", String.Empty)
+                                    .Trim()
+                                    .Replace(".", "\t");
+                int featureEndIndex = featureVector.IndexOf(FeatureEndTag, StringComparison.OrdinalIgnoreCase);
+                if (featureEndIndex > featureVector.IndexOf(NewFeatureEndTag, StringComparison.OrdinalIgnoreCase))
+                {
+                    featureEndIndex = featureVector.IndexOf(NewFeatureEndTag, StringComparison.OrdinalIgnoreCase);
+                }
+
+                // must be a crap line, if not ended correctly
+                if (featureEndIndex <= 0)
+                {
+                    errorMessage = string.Format("feature is not ending correctly");
+                    return false;
+                }
+
+                featureVector = featureVector.Substring(0, featureEndIndex).Trim('\t');
+
+                featureVector = AppendKeyValueParisHeadOf(
+                        featureVector,
+                        new KeyValuePair<string, string>("m:DocId", docId.ToString(CultureInfo.InvariantCulture)),
+                        new KeyValuePair<string, string>("m:MachineId", machineId),
+                        new KeyValuePair<string, string>("m:DocUrlHash16B", docUrlHash16B));
+
+                return true;
+            }
+            catch (Exception e)
+            {
+                errorMessage = e.Message;
+                return false;
+            }
+        }
+
+        public static bool ParseLine2(string line, out string query, out string murl, out string purl, out string featureVector, out string errorMessage)
+        {
+            errorMessage = string.Empty;
+            string docUrlHash16B = String.Empty;
+           
+            string[] lines = line.Split('\t');
+            query = lines[0];
+            murl = lines[1];
+            purl = lines[2];
+            featureVector = lines[3];
+            featureVector = featureVector
+                                .Replace("\"", String.Empty)
+                                .Trim()
+                                .Replace(",", "\t");
+            return true;
+        
+    }
+
+        private static string PickValue(string inputString, string key, bool allowNotExist = true, char equalOperator = '=')
+        {
+            string keyTag = String.Format(" {0}{1}", key, equalOperator);
+
+            int tagIndex = inputString.IndexOf(keyTag, StringComparison.CurrentCultureIgnoreCase);
+            if (tagIndex <= 0)
+            {
+                if (allowNotExist)
+                {
+                    return String.Empty;
+                }
+
+                throw new InvalidDataException(string.Format("cannot find value for tag: {0}, in line {1}", tagIndex, inputString));
+            }
+
+            int valueEndIndex = inputString.IndexOfAny(" ]".ToCharArray(), tagIndex + keyTag.Length);
+            int valueLenght = valueEndIndex - tagIndex - keyTag.Length;
+
+            return inputString.Substring(tagIndex + keyTag.Length, valueLenght);
+        }
+
+        private static string AppendKeyValueParisHeadOf(
+                string originalKeyValuePairString,
+                params KeyValuePair<string, string>[] keyValuePairs)
+        {
+            List<string> kvStringList = new List<string>();
+
+            foreach (KeyValuePair<string, string> keyValuePair in keyValuePairs)
+            {
+                if (String.IsNullOrEmpty(keyValuePair.Value))
+                {
+                    continue;
+                }
+
+                kvStringList.Add(String.Format("{0}={1}", keyValuePair.Key, keyValuePair.Value));
+            }
+
+            kvStringList.Add(originalKeyValuePairString);
+            return String.Join("\t", kvStringList);
+        }
+
+        public static bool ProcessAndVerifyFeatureVector(string featureVector, Dictionary<string, string> newFeatureVector, out string errorMessage)
+        {
+            errorMessage = "";
+            string[] featureColumns = featureVector.Split('\t');
+            foreach (string pair in featureColumns)
+            {
+                if (!String.IsNullOrEmpty(pair))
+                {
+                    // for all feature, it should be exactly with key and value format
+                    // usually, if any here with wrong format, it must be caused by IFM upload crap bug
+                    string[] kvPair = pair.Split('=');
+                    if (kvPair == null || kvPair.Length != 2)
+                    {
+                        errorMessage = "found pair not with Key=Value format: " + pair;
+                        return false;
+                    }
+                    string key = kvPair[0];
+                    if (newFeatureVector.ContainsKey(key))
+                    {
+                        errorMessage = "found duplicate feature key: " + pair;
+                        return false;
+                    }
+                    newFeatureVector.Add(kvPair[0], kvPair[1]);
+                }
+            }
+            return true;
+        }
+    }
+
+    public class IFMLogReduceExtractorlocal : Extractor
+    {
+        public override Schema Produces(string[] columns, string[] args)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("UrlHash", ColumnDataType.String));
+            schema.Add(new ColumnInfo("DocId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("MachineId", ColumnDataType.String));
+            schema.Add(new ColumnInfo("FeatureCount", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+       
+        return schema;
+        }
+
+        bool ReduceEnabled = false;
+        bool KeepEnabled = false;
+
+        private List<string> ReduceSubstringList = new List<string>();
+        private List<string> KeepSubstringList = new List<string>();
+        private HashSet<string> KeepFeatureMap = new HashSet<string>();
+
+        private void LoadKeepReduceList(string keepListFile)
+        {
+            using (StreamReader reader = new StreamReader(keepListFile))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    string[] array = line.Split('\t');
+                    if (array.Length == 2)
+                    {
+                        if (string.Equals("ReduceEnabled", array[0], StringComparison.CurrentCultureIgnoreCase))
+                        {
+                            Boolean.TryParse(array[1], out ReduceEnabled);
+                        }
+                        else if (string.Equals("KeepEnabled", array[0], StringComparison.CurrentCultureIgnoreCase))
+                        {
+                            Boolean.TryParse(array[1], out KeepEnabled);
+                        }
+                        else if (string.Equals("Reduce", array[0], StringComparison.CurrentCultureIgnoreCase))
+                        {
+                            string reduceItem = array[1].Trim();
+                            if (!string.IsNullOrEmpty(reduceItem) && !ReduceSubstringList.Contains(reduceItem))
+                            {
+                                ReduceSubstringList.Add(reduceItem);
+                            }
+                        }
+                        else if (string.Equals("KeepSub", array[0], StringComparison.CurrentCultureIgnoreCase))
+                        {
+                            string keepItem = array[1].Trim();
+                            if (!string.IsNullOrEmpty(keepItem) && !KeepSubstringList.Contains(keepItem))
+                            {
+                                KeepSubstringList.Add(keepItem);
+                            }
+                        }
+                        else if (string.Equals("Keep", array[0], StringComparison.CurrentCultureIgnoreCase))
+                        {
+                            string keepItem = array[1].Trim();
+                            if (!string.IsNullOrEmpty(keepItem) && !KeepFeatureMap.Contains(keepItem))
+                            {
+                                KeepFeatureMap.Add(keepItem);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private long ProcessAndVerifyFeatureVector(string featureVector, out string newFeatureVectorString)
+        {
+            string[] featureColumns = featureVector.Split('\t');
+            newFeatureVectorString = "";
+            StringBuilder newFeatureVector = new StringBuilder();
+            long featureCount = 0;
+            HashSet<string> featureNames = new HashSet<string>();
+            foreach (string pair in featureColumns)
+            {
+                if (!String.IsNullOrEmpty(pair))
+                {
+                    // for all feature, it should be exactly with key and value format
+                    // usually, if any here with wrong format, it must be caused by IFM uploading crap bug
+                    // skip this line
+                    string[] kvPair = pair.Split('=');
+                    if (kvPair == null || kvPair.Length != 2)
+                    {
+                        return 0;
+                    }
+
+                    bool fShouldBeReduced = false;
+                    string key = kvPair[0];
+
+                    // when we found some duplicate feature name,
+                    // this may be cause by IFM uploading crap bug
+                    // skip this line
+                    if (featureNames.Contains(key))
+                    {
+                        return 0;
+                    }
+                    featureNames.Add(key);
+
+                    // not in keep list
+                    // skip directly
+                    if (KeepEnabled && !key.StartsWith("m:"))
+                    {
+                        // if not in keep feature list
+                        // it might be reduced
+                        if (!KeepFeatureMap.Contains(key))
+                        {
+                            fShouldBeReduced = true;
+                            // check sub string list
+                            foreach (string keepString in KeepSubstringList)
+                            {
+                                // if it contains keep sub string
+                                // keep it
+                                if (key.Contains(keepString))
+                                {
+                                    fShouldBeReduced = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (fShouldBeReduced)
+                    {
+                        continue;
+                    }
+
+                    // should be reduced, by substring
+                    if (ReduceEnabled && !key.StartsWith("m:"))
+                    {
+                        foreach (string reduceString in ReduceSubstringList)
+                        {
+                            if (key.Contains(reduceString))
+                            {
+                                fShouldBeReduced = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (fShouldBeReduced)
+                    {
+                        continue;
+                    }
+
+                    featureCount++;
+                    newFeatureVector.AppendFormat("{0}\t", pair);
+                }
+            }
+            newFeatureVectorString = newFeatureVector.ToString().TrimEnd('\t');
+            return featureCount;
+        }
+
+        public override IEnumerable<Row> Extract(StreamReader reader, Row output, string[] args)
+        {
+            // load keep and reduce list
+            LoadKeepReduceList(args[0]);
+
+            //StringBuilder errorLines = new StringBuilder();
+            //int numberOfErrors = 0;
+
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                long queryId;
+                string url;
+                string urlHash;
+                long docId;
+                string machineId;
+                string jobId;
+                string featureVector;
+                string errorMessage = "";
+                if (IFMLogParser.ParseLine(line, out queryId, out url, out urlHash, out docId,
+                            out machineId, out jobId, out featureVector, out errorMessage))
+                {
+                    string newFeatureVectorString;
+                    long featureCount = ProcessAndVerifyFeatureVector(featureVector, out newFeatureVectorString);
+                    if (featureCount > 0)
+                    {
+                        output["QueryId"].Set(queryId);
+                        output["DocId"].Set(docId);
+                        output["UrlHash"].Set(urlHash);
+                        output["DocId"].Set(docId);
+                        output["MachineId"].Set(machineId);
+                        output["FeatureVector"].Set(newFeatureVectorString);
+                     
+                        output["FeatureCount"].Set(featureCount);
+                        yield return output;
+                    }
+                }
+                else
+                {
+                    //errorLines.AppendFormat("Error: {0}, Line: {1}\n", errorMessage, line.Substring(0, 250));
+                    //if (++numberOfErrors > 5) // TODO: Make it configurable
+                    //{
+                    //    throw new Exception(errorLines.ToString());
+                    //}
+                }
+            }
+        }
+    } // end of class: IFMLogReduceExtractor
+
+    public class IFMLogErrorLineExtractor : Extractor
+    {
+        public override Schema Produces(string[] columns, string[] args)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("UrlHash", ColumnDataType.String));
+            schema.Add(new ColumnInfo("Line", ColumnDataType.String));
+            return schema;
+        }
+
+        public override IEnumerable<Row> Extract(StreamReader reader, Row output, string[] args)
+        {
+            bool outputError = bool.Parse(args[0]);
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                long queryId;
+                string url;
+                string urlHash;
+                long docId;
+                string machineId;
+                string jobId;
+                string featureVector;
+                string errorMessage = "";
+                bool parseSucceeded = IFMLogParser.ParseLine(line, out queryId, out url, out urlHash, out docId,
+                            out machineId, out jobId, out featureVector, out errorMessage);
+                if (parseSucceeded && !outputError)
+                {
+                    output["QueryId"].Set(queryId);
+                    output["UrlHash"].Set(urlHash);
+                    output["Line"].Set(line);
+                    yield return output;
+                }
+                else if (!parseSucceeded && outputError)
+                {
+                    output["QueryId"].Set(0);
+                    output["UrlHash"].Set("");
+                    output["Line"].Set(line);
+                    yield return output;
+                }
+            }
+        }
+    } // end of class: IFMLogErrorLineExtractor
+
+
+    public class IFMLogCountDedupReducer : Reducer
+    {
+        public override Schema Produces(string[] columns, string[] args, Schema input)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("UrlHash", ColumnDataType.String));
+            schema.Add(new ColumnInfo("DocId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+            return schema;
+        }
+
+        public override IEnumerable<Row> Reduce(RowSet input, Row outputRow, string[] args)
+        {
+            long queryId = -1;
+            long docId = -1;
+            string urlHash = "";
+            string featureVector = "";
+            long featureCount = -1;
+            foreach (Row row in input.Rows)
+            {
+                long curFeatureCount = row["FeatureCount"].Long;
+                if (curFeatureCount > featureCount)
+                {
+                    featureCount = curFeatureCount;
+                    queryId = row["QueryId"].Long;
+                    urlHash = row["UrlHash"].String;
+                    docId = row["DocId"].Long;
+                    featureVector = row["FeatureVector"].String;
+                }
+            }
+
+            if (featureCount > 0)
+            {
+                outputRow["QueryId"].Set(queryId);
+                outputRow["UrlHash"].Set(urlHash);
+                outputRow["DocId"].Set(docId);
+                outputRow["FeatureVector"].Set(featureVector);
+                yield return outputRow;
+            }
+        }
+    }
+
+    public class IFMLogMachineDocAggregateReducer : Reducer
+    {
+        public override Schema Produces(string[] columns, string[] args, Schema input)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("UrlHash", ColumnDataType.String));
+            schema.Add(new ColumnInfo("MachineDocs", ColumnDataType.String));
+            schema.Add(new ColumnInfo("Count", ColumnDataType.Long));
+            return schema;
+        }
+
+        public override IEnumerable<Row> Reduce(RowSet input, Row outputRow, string[] args)
+        {
+            long queryId = -1;
+            string docId = "";
+            string urlHash = "";
+            string machineId = "";
+
+            Dictionary<string, int> machineDocs = new Dictionary<string, int>();
+            long totalCount = 0;
+            foreach (Row row in input.Rows)
+            {
+                queryId = row["QueryId"].Long;
+                urlHash = row["UrlHash"].String;
+                docId = row["DocId"].String;
+                machineId = row["MachineId"].String;
+                string machineString = string.Format("{0}:{1}", docId, machineId);
+                if (!machineDocs.ContainsKey(machineString))
+                {
+                    machineDocs.Add(machineString, 1);
+                    totalCount++;
+                }
+                else
+                {
+                    machineDocs[machineString]++;
+                }
+            }
+
+            if (queryId >= 0)
+            {
+
+                List<string> items = new List<string>();
+                foreach (KeyValuePair<string, int> md in machineDocs)
+                {
+                    items.Add(md.Key + ":" + md.Value + ";");
+                }
+                items.Sort();
+                StringBuilder sb = new StringBuilder();
+                foreach (string str in items)
+                {
+                    sb.Append(str);
+                }
+                outputRow["QueryId"].Set(queryId);
+                outputRow["UrlHash"].Set(urlHash);
+                outputRow["MachineDocs"].Set(sb.ToString());
+                outputRow["Count"].Set(totalCount);
+                yield return outputRow;
+            }
+        }
+    }
+    // Find all header strings
+    // Support filter feature function
+    public class RetriveHeaderProcessorLocal : Processor
+    {
+        public override Schema Produces(string[] columns, string[] args, Schema input)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("Header", ColumnDataType.String));
+            schema.Add(new ColumnInfo("HeaderCount", ColumnDataType.Integer));
+            return schema;
+        }
+        private string[] reduceList = null;
+
+        public override IEnumerable<Row> Process(RowSet input, Row outputRow, string[] args)
+        {
+            if (args.Length >= 1)
+            {
+                string reduceListString = args[0];
+                if (!string.IsNullOrEmpty(reduceListString))
+                {
+                    reduceList = reduceListString.Split(';');
+                    if (reduceList != null && reduceList.Length > 0)
+                    {
+                        for (int i = 0; i < reduceList.Length; i++)
+                        {
+                            reduceList[i] = reduceList[i].Trim();
+                        }
+                    }
+                }
+            }
+
+            Dictionary<String, int> headerList = new Dictionary<string, int>();
+            foreach (Row row in input.Rows)
+            {
+                string featureVector = row["FeatureVector"].String;
+                string[] featureColumns = featureVector.Split('\t');
+                foreach (string pair in featureColumns)
+                {
+                    if (!String.IsNullOrEmpty(pair))
+                    {
+                        int sepIdx = pair.IndexOf('=');
+                        if (sepIdx < 0)
+                        {
+                            continue;
+                        }
+
+                        bool fShouldBeReduced = false;
+                        string key = pair.Substring(0, sepIdx);
+                        if (reduceList != null)
+                        {
+                            foreach (string reduceSubString in reduceList)
+                            {
+                                if (!string.IsNullOrEmpty(reduceSubString) && key.Contains(reduceSubString))
+                                {
+                                    fShouldBeReduced = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (fShouldBeReduced)
+                        {
+                            continue;
+                        }
+
+                        if (!headerList.ContainsKey(key))
+                        {
+                            headerList[key] = 1;
+
+                        }
+                        else
+                        {
+                            headerList[key]++;
+                        }
+                    }
+                }
+            }
+            foreach (KeyValuePair<string, int> kvPair in headerList)
+            {
+                outputRow["Header"].Set(kvPair.Key);
+                outputRow["HeaderCount"].Set(kvPair.Value);
+                yield return outputRow;
+            }
+        }
+    } // end of class: RetriveHeaderProcessor
+
+    // Convert KV to TSV format
+    // Input: QueryId, Query, CanonicalQuery, Url, Rating, Date, Market, ResultType, UrlHash, FeatureVector
+    // Output: Url, QueryId, FeatureVector
+    public class ExtractionKV2TSVCombiner : Combiner
+    {
+        // feature names <-> location in feature vector
+        Dictionary<string, int> m_szFeatureNames;
+
+        // define of schema
+        const string c_schema_queryIdHead = "QueryId";
+        const string c_schema_featureVector = "FeatureVector";
+        const string c_schema_hrsVector = "HRSVector";
+
+        public override Schema Produces(
+           string[] columns,
+           string[] args,
+           Schema leftSchema,
+           string leftTable,
+           Schema rightSchema,
+           string rightTable)
+        {
+            return new Schema(new string[] { c_schema_queryIdHead, c_schema_featureVector });
+        }
+
+        private void ParseArg(string[] args)
+        {
+        }
+
+        public override IEnumerable<Row> Combine(RowSet left, RowSet right, Row output, string[] args)
+        {
+            ParseArg(args);
+            // right row has full header information
+            foreach (Row row in right.Rows)
+            {
+                // step1: load full header information
+                string[] fNames = row["Header"].String.Split('\t');
+                if (fNames.Length <= 0)
+                {
+                    throw new Exception("read Header error");
+                }
+                m_szFeatureNames = new Dictionary<string, int>();
+                StringBuilder sb = new StringBuilder();
+
+                // decide the sequence of features, "m:" first
+                int nFeat = 0;
+                for (int i = 0; i < fNames.Length; i++)
+                {
+                    if (fNames[i].StartsWith("m:") && !m_szFeatureNames.ContainsKey(fNames[i]))
+                    {
+                        m_szFeatureNames.Add(fNames[i], nFeat);
+                        nFeat++;
+                    }
+                }
+
+                // decide the sequence of features, for the rest except of "m:"
+                for (int i = 0; i < fNames.Length; i++)
+                {
+                    if (!fNames[i].StartsWith("m:") && !m_szFeatureNames.ContainsKey(fNames[i]))
+                    {
+                        m_szFeatureNames.Add(fNames[i], nFeat);
+                        nFeat++;
+                    }
+                }
+
+                string szQueryID = null;
+
+                // output Features
+                string line;
+                foreach (Row leftRow in left.Rows)
+                {
+                    line = leftRow[c_schema_hrsVector].String + "\t" + leftRow[c_schema_featureVector].String;
+                    if (string.IsNullOrEmpty(line))
+                    {
+                        continue;
+                    }
+
+                    szQueryID = leftRow["QueryId"].String;
+
+                    string[] szFeatureValues = new string[m_szFeatureNames.Count];
+                    for (int i = 0; i < m_szFeatureNames.Count; i++)
+                    {
+                        szFeatureValues[i] = null;
+                    }
+
+                    // parse all key-value pairs
+                    string[] vitem = line.Split(new char[] { '\t' }, StringSplitOptions.None);
+
+                    int countOfFeatures = 0;
+                    bool featureHasError = false;
+                    for (int i = 0; i < vitem.Length; i++)
+                    {
+                        int index = vitem[i].IndexOf('=');
+                        if (index <= 0 || index == vitem[i].Length - 1) continue;
+
+                        string FeatName = vitem[i].Substring(0, index);
+
+                        // only output features in feature name list
+                        if (m_szFeatureNames.ContainsKey(FeatName))
+                        {
+                            string FeatValue = vitem[i].Substring(index + 1);
+                            countOfFeatures++;
+                            szFeatureValues[m_szFeatureNames[FeatName]] = FeatValue;
+                        }
+                    }
+
+                    if (!featureHasError && countOfFeatures > 0)
+                    {
+                        StringBuilder featureStringBuilder = new StringBuilder();
+                        for (int i = 0; i < szFeatureValues.Length; i++)
+                        {
+                            // stop early, if no feature left
+                            if (countOfFeatures == 0) break;
+                            if (!string.IsNullOrEmpty(szFeatureValues[i]))
+                            {
+                                countOfFeatures--;
+                                featureStringBuilder.Append(szFeatureValues[i]);
+                            }
+                            featureStringBuilder.Append('\t');
+                        }
+
+                        featureStringBuilder.Length = featureStringBuilder.Length - 1;
+                        string featureVector = featureStringBuilder.ToString().TrimEnd(new char[] { '\t' });
+                        output[c_schema_queryIdHead].Set(szQueryID);
+                        output[c_schema_featureVector].Set(featureVector);
+                        yield return output;
+                    }
+                }
+            }
+        }
+    } // end of class: ExtractionKV2TSVCombiner
+
+    public class ExtractionHeaderOutputter : Outputter
+    {
+        const int Max_Flush_Size = 1000000;
+        public override void Output(RowSet input, StreamWriter writer, string[] args)
+        {
+            foreach (Row row in input.Rows)
+            {
+                string headerLine = row["Header"].String;
+                IOUtil.WriteLongString(headerLine, writer, Max_Flush_Size);
+                writer.WriteLine();
+                break;
+            }
+        }
+    }
+
+    public class FeatureOverwriteReducer : Reducer
+    {
+        public override Schema Produces(string[] columns, string[] args, Schema input)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+            return schema;
+        }
+
+        public override IEnumerable<Row> Reduce(RowSet input, Row outputRow, string[] args)
+        {
+            foreach (Row row in input.Rows)
+            {
+                long QueryId = row["QueryId"].Long;
+                string f1 = row["FeatureVector1"].String;
+                string f2 = row["FeatureVector2"].String;
+                if (string.IsNullOrEmpty(f2))
+                {
+                    outputRow["FeatureVector"].Set(f1.TrimEnd());
+                }
+                else
+                {
+                    string[] f1Array = f1.Split('\t');
+                    string[] f2Array = f2.Split('\t');
+                    StringBuilder sb = new StringBuilder();
+                    int maxLen = f1Array.Length >= f2Array.Length ? f1Array.Length : f2Array.Length;
+                    for (int i = 0; i < maxLen; i++)
+                    {
+                        if (i >= f1Array.Length || string.IsNullOrEmpty(f1Array[i]))
+                        {
+                            sb.Append(f2Array[i] + "\t");
+                        }
+                        else
+                        {
+                            sb.Append(f1Array[i] + "\t");
+                        }
+                    }
+                    outputRow["FeatureVector"].Set(sb.ToString().TrimEnd());
+                }
+                yield return outputRow;
+            }
+        }
+    }
+
+    // This outputter support gzip format output, when given parameter "compress=true"
+    // But, this only works, when there is a sort just befor doing this
+    // because the sort method will put all data in one machine
+    public class ExtractionOutputterLocal : Outputter
+    {
+        bool m_fCompress = false;
+        const int Max_Flush_Size = 1000000;
+        public override void Output(RowSet input, StreamWriter writer, string[] args)
+        {
+            if (args.Length > 0)
+            {
+                foreach (string arg in args)
+                {
+                    if (string.Equals(arg, "compress=true", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        m_fCompress = true;
+                        break;
+                    }
+                }
+            }
+            StreamWriter outputWriter = writer;
+            if (m_fCompress)
+            {
+                ICSharpCode.SharpZipLib.GZip.GZipOutputStream gzStream = new ICSharpCode.SharpZipLib.GZip.GZipOutputStream(writer.BaseStream);
+                outputWriter = new StreamWriter(gzStream);
+            }
+            int featureColumn = input.Schema["FeatureVector"];
+            int queryColumn = input.Schema["Query"];
+            int murlColumn = input.Schema["Murl"];
+            int purlColumn = input.Schema["Purl"];
+
+        if (featureColumn >= 0)
+            {
+                foreach (Row row in input.Rows)
+                {
+                    string qs = row[queryColumn].String + '\t';
+                    if (string.IsNullOrEmpty(qs))
+                    {
+                        continue;
+                    }
+
+                    IOUtil.WriteLongString(qs, outputWriter, Max_Flush_Size);
+                   
+
+                    string ms = row[murlColumn].String + '\t';
+                    if (string.IsNullOrEmpty(ms))
+                    {
+                        continue;
+                    }
+
+                    IOUtil.WriteLongString(ms, outputWriter, Max_Flush_Size);
+                  
+
+                    string ps = row[purlColumn].String + '\t';
+                    if (string.IsNullOrEmpty(ps))
+                    {
+                        continue;
+                    }
+
+                    IOUtil.WriteLongString(ps, outputWriter, Max_Flush_Size);
+                  
+                    string s = row[featureColumn].String;
+                    if (string.IsNullOrEmpty(s))
+                    {
+                        continue;
+                    }
+
+                    IOUtil.WriteLongString(s, outputWriter, Max_Flush_Size);
+                    outputWriter.WriteLine();
+                }
+            }
+            if (m_fCompress)
+            {
+                outputWriter.Close();
+            }
+        }
+    }
+
+    // group Extractions based on queryId
+    // queryId "-1" will be treated as header
+    // only output oneline for it
+    // Input could be split base on queryId, so that jobs could be distributed into multi machines
+    // input QueryId, FeatureVector
+    // Output FeatureVector
+    public class ExtractionSortReducer : Reducer
+    {
+        public override Schema Produces(string[] columns, string[] args, Schema input)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+            return schema;
+        }
+
+        bool fKeepHeader = true;
+        void ParseArgs(string[] args)
+        {
+            if (args.Length > 0)
+            {
+                if (string.Equals(args[0], "keepheader=false", StringComparison.CurrentCultureIgnoreCase))
+                {
+                    fKeepHeader = false;
+                }
+            }
+        }
+
+        public override IEnumerable<Row> Reduce(RowSet input, Row outputRow, string[] args)
+        {
+            ParseArgs(args);
+            int FeatVecColumn = input.Schema["FeatureVector"];
+            if (FeatVecColumn < 0)
+            {
+                throw new Exception("ExtractionSortReducer: Can not find Feature Vector in input row.");
+            }
+
+            int QueryIdColumn = input.Schema["QueryId"];
+            if (QueryIdColumn < 0)
+            {
+                throw new Exception("ExtractionSortReducer: Can not find query Id in input row.");
+            }
+
+            bool bFirst = true;
+            foreach (Row row in input.Rows)
+            {
+                string line = row[FeatVecColumn].String;
+                long queryId = row[QueryIdColumn].Long;
+
+                if (string.IsNullOrEmpty(line))
+                {
+                    continue;
+                }
+
+                if (queryId == -1) // this should be a header
+                {
+                    if (fKeepHeader)
+                    {
+                        if (bFirst)
+                        {
+                            outputRow["QueryId"].UnsafeSet(-1);
+                            outputRow["FeatureVector"].UnsafeSet(line);
+                            yield return outputRow;
+                        }
+                        bFirst = false;
+                    }
+                }
+                else
+                {
+                    outputRow["QueryId"].UnsafeSet(queryId);
+                    outputRow["FeatureVector"].UnsafeSet(line);
+                    yield return outputRow;
+                }
+            }
+        }
+    }
+
+    // Return one single header line, but sort header by its count
+    // intputs: "Header", "HeaderCount"
+    // output: "Header"
+    public class SortedHeaderReducerLocal : Reducer
+    {
+        class HeaderEntry : IComparable
+        {
+            public HeaderEntry(string name, int count)
+            {
+                HeaderName = name;
+                HeaderCount = count;
+            }
+            public string HeaderName = "";
+            public int HeaderCount = 0;
+            public int CompareTo(object obj)
+            {
+                HeaderEntry other = (HeaderEntry)obj;
+                if (!other.HeaderName.StartsWith("m:") && HeaderName.StartsWith("m:"))
+                {
+                    return -1;
+                }
+                else if (other.HeaderName.StartsWith("m:") && !HeaderName.StartsWith("m:"))
+                {
+                    return 1;
+                }
+                else if (this.HeaderCount == other.HeaderCount)
+                {
+                    return this.HeaderName.CompareTo(other.HeaderName);
+                }
+                else
+                {
+                    return this.HeaderCount >= other.HeaderCount ? -1 : 1;
+                }
+            }
+        }
+
+        public override Schema Produces(string[] columns, string[] args, Schema input)
+        {
+            return new Schema("Header");
+        }
+
+        public override IEnumerable<Row> Reduce(RowSet input, Row outputRow, string[] args)
+        {
+            Dictionary<String, HeaderEntry> headerList = new Dictionary<string, HeaderEntry>();
+            foreach (Row row in input.Rows)
+            {
+                string header = row["Header"].String;
+                int count = row["HeaderCount"].Integer;
+                if (!headerList.ContainsKey(header))
+                {
+                    headerList.Add(header, new HeaderEntry(header, count));
+                }
+                else
+                {
+                    headerList[header].HeaderCount += count;
+                }
+            }
+            List<HeaderEntry> headerEntries = new List<HeaderEntry>();
+            foreach (KeyValuePair<string, HeaderEntry> kvp in headerList)
+            {
+                headerEntries.Add(kvp.Value);
+            }
+            // sort the entries
+            headerEntries.Sort();
+            StringBuilder output = new StringBuilder();
+            foreach (HeaderEntry entry in headerEntries)
+            {
+                output.AppendFormat("{0}\t", entry.HeaderName);
+            }
+            outputRow["Header"].Set(output.ToString().TrimEnd('\t'));
+            yield return outputRow;
+        }
+    }
+    public class ExtractionTSVResortExtractor : Extractor
+    {
+        const string c_QueryId = "m:QueryId";
+        int m_QueryIdPos = -1;
+        string m_headerFull;
+        string m_headerMe;
+        string m_headerFullDedup = "";
+        List<int> featurePosMap = new List<int>();
+        bool m_fOutputHeader = true;
+
+        private HashSet<string> KeepFeatureMap = new HashSet<string>();
+
+        private void LoadKeepList(string keepListFile)
+        {
+            using (StreamReader reader = new StreamReader(keepListFile))
+            {
+                string keepItem;
+                while ((keepItem = reader.ReadLine()) != null)
+                {
+                    keepItem = keepItem.Trim();
+                    if (!string.IsNullOrEmpty(keepItem) && !KeepFeatureMap.Contains(keepItem))
+                    {
+                        KeepFeatureMap.Add(keepItem);
+                    }
+                }
+            }
+        }
+
+        private void ParseArg(string[] args)
+        {
+            m_headerMe = File.ReadAllText(args[0]).Trim();
+            m_headerFull = File.ReadAllText(args[1]).Replace('\n', '\t');
+            if (args.Length >= 3)
+            {
+                bool.TryParse(args[2], out m_fOutputHeader);
+            }
+            if (args.Length >= 4)
+            {
+                LoadKeepList(args[3]);
+            }
+            CacualteFeaturePosMap();
+        }
+
+        private void CacualteFeaturePosMap()
+        {
+            List<string> featureNames = new List<string>();
+            string[] featsFull = m_headerFull.Split('\t');
+            string[] featsMe = m_headerMe.Split('\t');
+            HashSet<string> foundFeats = new HashSet<string>();
+            // read features from all features
+            foreach (string feat in featsFull)
+            {
+                string trimFeat = feat.Trim();
+                if (!string.IsNullOrEmpty(trimFeat))
+                {
+                    if (!foundFeats.Contains(trimFeat))
+                    {
+                        if (KeepFeatureMap.Count == 0 || KeepFeatureMap.Contains(trimFeat) || trimFeat.StartsWith("m:"))
+                        {
+                            foundFeats.Add(trimFeat);
+                        }
+                    }
+                }
+            }
+
+            StringBuilder headerBuilder = new StringBuilder();
+
+            foreach (string newFeat in foundFeats)
+            {
+                if (newFeat.StartsWith("m:"))
+                {
+                    featureNames.Add(newFeat);
+                    if (m_fOutputHeader)
+                    {
+                        headerBuilder.AppendFormat("{0}\t", newFeat);
+                    }
+                }
+            }
+
+            foreach (string newFeat in foundFeats)
+            {
+                if (!newFeat.StartsWith("m:"))
+                {
+                    featureNames.Add(newFeat);
+                    if (m_fOutputHeader)
+                    {
+                        headerBuilder.AppendFormat("{0}\t", newFeat);
+                    }
+                }
+            }
+
+            m_headerFullDedup = headerBuilder.ToString().TrimEnd();
+
+            // get feature map
+            Dictionary<string, int> featuresMeMap = new Dictionary<string, int>();
+            for (int i = 0; i < featsMe.Length; i++)
+            {
+                if (c_QueryId == featsMe[i])
+                {
+                    m_QueryIdPos = i;
+                }
+                if (!featuresMeMap.ContainsKey(featsMe[i]))
+                {
+                    featuresMeMap.Add(featsMe[i], i);
+                }
+
+            }
+
+
+            // caculate the pos mapping from overall feature list to feature me array
+            featurePosMap = new List<int>();
+            for (int i = 0; i < featureNames.Count; i++)
+            {
+                // -1 means there is no such feature in feature me
+                int pos = -1;
+                if (featuresMeMap.ContainsKey(featureNames[i]))
+                {
+                    pos = featuresMeMap[featureNames[i]];
+                }
+                featurePosMap.Add(pos);
+            }
+        }
+
+        public override Schema Produces(string[] columns, string[] args)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+            return schema;
+        }
+
+        public string ProduceNewHeader(string[] args)
+        {
+            ParseArg(args);
+            return m_headerFullDedup;
+        }
+
+        public override IEnumerable<Row> Extract(StreamReader _reader, Row outputRow, string[] args)
+        {
+            ParseArg(args);
+            StreamReader reader = _reader;
+
+            if (m_fOutputHeader)
+            {
+                outputRow["QueryId"].Set(-1);
+                outputRow["FeatureVector"].Set(m_headerFullDedup);
+                yield return outputRow;
+            }
+
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                StringBuilder sb = new StringBuilder();
+                long queryId = -1;
+                try
+                {
+                    string[] featureArray = line.Split('\t');
+                    // this is not a valid line, skip it
+                    if (featureArray == null || featureArray.Length <= m_QueryIdPos)
+                    {
+                        continue;
+                    }
+
+                    if (!long.TryParse(featureArray[m_QueryIdPos], out queryId))
+                    {
+                        continue;
+                    }
+
+                    if (queryId < 0)
+                    {
+                        continue;
+                    }
+
+                    for (int i = 0; i < featurePosMap.Count; i++)
+                    {
+                        string feat = "";
+                        int pos = featurePosMap[i];
+                        if (pos >= 0 && pos < featureArray.Length)
+                        {
+                            feat = featureArray[pos];
+                        }
+                        sb.Append(feat + "\t");
+                    }
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+                outputRow["QueryId"].Set(queryId);
+                outputRow["FeatureVector"].Set(sb.ToString().TrimEnd('\t'));
+                yield return outputRow;
+            }
+        }
+    }
+    public class ExtractionTSVResortExtractorWithDocId : Extractor
+    {
+        const string c_QueryId = "m:QueryId";
+        string m_DocIdId = "";
+        int m_QueryIdPos = -1;
+        int m_DocIdPos = -1;
+        string m_headerFull;
+        string m_headerMe;
+        string m_headerFullDedup = "";
+        List<int> featurePosMap = new List<int>();
+        bool m_fOutputHeader = true;
+
+        private HashSet<string> KeepFeatureMap = new HashSet<string>();
+
+        private void LoadKeepList(string keepListFile)
+        {
+            using (StreamReader reader = new StreamReader(keepListFile))
+            {
+                string keepItem;
+                while ((keepItem = reader.ReadLine()) != null)
+                {
+                    keepItem = keepItem.Trim();
+                    if (!string.IsNullOrEmpty(keepItem) && !KeepFeatureMap.Contains(keepItem))
+                    {
+                        KeepFeatureMap.Add(keepItem);
+                    }
+                }
+            }
+        }
+
+        private void ParseArg(string[] args)
+        {
+            m_headerMe = File.ReadAllText(args[0]).Trim();
+            m_headerFull = File.ReadAllText(args[1]).Replace('\n', '\t');
+            bool.TryParse(args[2], out m_fOutputHeader);
+            m_DocIdId = args[3];
+            CacualteFeaturePosMap();
+        }
+
+        private void CacualteFeaturePosMap()
+        {
+            List<string> featureNames = new List<string>();
+            string[] featsFull = m_headerFull.Split('\t');
+            string[] featsMe = m_headerMe.Split('\t');
+            HashSet<string> foundFeats = new HashSet<string>();
+            // read features from all features
+            foreach (string feat in featsFull)
+            {
+                string trimFeat = feat.Trim();
+                if (!string.IsNullOrEmpty(trimFeat))
+                {
+                    if (!foundFeats.Contains(trimFeat))
+                    {
+                        if (KeepFeatureMap.Count == 0 || KeepFeatureMap.Contains(trimFeat) || trimFeat.StartsWith("m:"))
+                        {
+                            foundFeats.Add(trimFeat);
+                        }
+                    }
+                }
+            }
+
+            StringBuilder headerBuilder = new StringBuilder();
+
+            foreach (string newFeat in foundFeats)
+            {
+                if (newFeat.StartsWith("m:"))
+                {
+                    featureNames.Add(newFeat);
+                    if (m_fOutputHeader)
+                    {
+                        headerBuilder.AppendFormat("{0}\t", newFeat);
+                    }
+                }
+            }
+
+            foreach (string newFeat in foundFeats)
+            {
+                if (!newFeat.StartsWith("m:"))
+                {
+                    featureNames.Add(newFeat);
+                    if (m_fOutputHeader)
+                    {
+                        headerBuilder.AppendFormat("{0}\t", newFeat);
+                    }
+                }
+            }
+
+            m_headerFullDedup = headerBuilder.ToString().TrimEnd();
+
+            // get feature map
+            Dictionary<string, int> featuresMeMap = new Dictionary<string, int>();
+            for (int i = 0; i < featsMe.Length; i++)
+            {
+                if (c_QueryId == featsMe[i])
+                {
+                    m_QueryIdPos = i;
+                }
+                else if ((!string.IsNullOrEmpty(m_DocIdId)) && m_DocIdId == featsMe[i])
+                {
+                    m_DocIdPos = i;
+                }
+                if (!featuresMeMap.ContainsKey(featsMe[i]))
+                {
+                    featuresMeMap.Add(featsMe[i], i);
+                }
+            }
+
+
+            // caculate the pos mapping from overall feature list to feature me array
+            featurePosMap = new List<int>();
+            for (int i = 0; i < featureNames.Count; i++)
+            {
+                // -1 means there is no such feature in feature me
+                int pos = -1;
+                if (featuresMeMap.ContainsKey(featureNames[i]))
+                {
+                    pos = featuresMeMap[featureNames[i]];
+                }
+                featurePosMap.Add(pos);
+            }
+        }
+
+        public override Schema Produces(string[] columns, string[] args)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("DocId", ColumnDataType.String));
+            schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+            return schema;
+        }
+
+        public string ProduceNewHeader(string[] args)
+        {
+            ParseArg(args);
+            return m_headerFullDedup;
+        }
+
+        public override IEnumerable<Row> Extract(StreamReader _reader, Row outputRow, string[] args)
+        {
+            ParseArg(args);
+            StreamReader reader = _reader;
+
+            if (m_fOutputHeader)
+            {
+                outputRow["QueryId"].Set(-1);
+                outputRow["DocId"].Set("");
+                outputRow["FeatureVector"].Set(m_headerFullDedup);
+                yield return outputRow;
+            }
+
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                StringBuilder sb = new StringBuilder();
+                long queryId = -1;
+                string docId = "";
+                try
+                {
+                    string[] featureArray = line.Split('\t');
+                    // this is not a valid line, skip it
+                    if (featureArray == null || featureArray.Length <= m_QueryIdPos || featureArray.Length <= m_DocIdPos)
+                    {
+                        continue;
+                    }
+
+                    if (!long.TryParse(featureArray[m_QueryIdPos], out queryId))
+                    {
+                        continue;
+                    }
+                    docId = string.IsNullOrEmpty(m_DocIdId) ? "" : featureArray[m_DocIdPos];
+                    if (queryId < 0)
+                    {
+                        continue;
+                    }
+
+                    for (int i = 0; i < featurePosMap.Count; i++)
+                    {
+                        string feat = "";
+                        int pos = featurePosMap[i];
+                        if (pos >= 0 && pos < featureArray.Length)
+                        {
+                            feat = featureArray[pos];
+                        }
+                        sb.Append(feat + "\t");
+                    }
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+                outputRow["QueryId"].Set(queryId);
+                outputRow["DocId"].Set(docId);
+                outputRow["FeatureVector"].Set(sb.ToString().TrimEnd('\t'));
+                yield return outputRow;
+            }
+        }
+    }
+
+    public class ExtractionTSVQueryUrlResortExtractor : Extractor
+    {
+        const string c_QueryId = "m:QueryId";
+        const string c_Url = "m:Url";
+        int m_QueryIdPos = -1;
+        int m_UrlPos = -1;
+        string m_headerFull;
+        bool m_fOutputHeader = true;
+
+        private void LoadQueryIdUrlPos()
+        {
+            string[] featsFull = m_headerFull.Trim().Split('\t');
+            // caculate the pos mapping from overall feature list to feature me array
+            for (int i = 0; i < featsFull.Length; i++)
+            {
+                if (c_QueryId == featsFull[i])
+                {
+                    m_QueryIdPos = i;
+                }
+                else if (c_Url == featsFull[i])
+                {
+                    m_UrlPos = i;
+                }
+            }
+        }
+
+        private void ParseArg(string[] args)
+        {
+            m_headerFull = File.ReadAllText(args[0]).Replace('\n', '\t').Trim();
+            if (args.Length >= 2)
+            {
+                bool.TryParse(args[1], out m_fOutputHeader);
+            }
+            LoadQueryIdUrlPos();
+        }
+
+
+        public override Schema Produces(string[] columns, string[] args)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("Url", ColumnDataType.String));
+            schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+            return schema;
+        }
+
+        public string ProduceNewHeader(string[] args)
+        {
+            ParseArg(args);
+            return m_headerFull;
+        }
+
+        public override IEnumerable<Row> Extract(StreamReader _reader, Row outputRow, string[] args)
+        {
+            ParseArg(args);
+            StreamReader reader = _reader;
+
+            if (m_fOutputHeader)
+            {
+                outputRow["QueryId"].Set(-1);
+                outputRow["Url"].Set("");
+                outputRow["FeatureVector"].Set(m_headerFull);
+                yield return outputRow;
+            }
+
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+
+                long queryId = -1;
+                string url = "";
+                try
+                {
+                    string[] featureArray = line.Split('\t');
+                    // this is not a valid line, skip it
+                    if (featureArray == null || featureArray.Length <= m_QueryIdPos || featureArray.Length <= m_UrlPos)
+                    {
+                        continue;
+                    }
+
+                    if (!long.TryParse(featureArray[m_QueryIdPos], out queryId))
+                    {
+                        continue;
+                    }
+
+                    if (queryId < 0)
+                    {
+                        continue;
+                    }
+
+                    url = featureArray[m_UrlPos];
+                }
+                catch (Exception)
+                {
+                    //throw ex;
+                    continue;
+                }
+
+                //throw new Exception(line);
+                outputRow["QueryId"].Set(queryId);
+                outputRow["Url"].Set(url);
+                outputRow["FeatureVector"].Set(line);
+                yield return outputRow;
+            }
+        }
+    }
+    //public class ExtractionFreeformReducer : Reducer
+    //{
+    //    class Item
+    //    {
+    //        public long QueryId;
+    //        public string Url;
+    //        public string FeatureVector;
+    //        public double rank = 0;
+    //    }
+
+    //    public override Schema Produces(string[] columns, string[] args, Schema input)
+    //    {
+    //        Schema schema = new Schema();
+    //        schema.Add(new ColumnInfo("QueryId", ColumnDataType.Long));
+    //        schema.Add(new ColumnInfo("Url", ColumnDataType.String));
+    //        schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+    //        return schema;
+    //    }
+
+    //    public override IEnumerable<Row> Reduce(RowSet input, Row outputRow, string[] args)
+    //    {
+    //        string[] headers = File.ReadAllText(args[0]).Trim().Split('\t');
+    //        string dedupFreeform = args[1];
+    //        string filterFreeform = args[2];
+
+    //        NNInputTransform.FreeFormTransform.Node dedupParser = null;
+    //        if (!string.IsNullOrEmpty(dedupFreeform))
+    //        {
+    //            dedupParser = new NNInputTransform.FreeFormTransform.Node();
+    //            dedupParser.Parse(dedupFreeform);
+    //            dedupParser.RecognizeDataHeader(headers);
+    //        }
+
+    //        NNInputTransform.FreeFormTransform.Node filterParser = null;
+    //        if (!string.IsNullOrEmpty(filterFreeform))
+    //        {
+    //            filterParser = new NNInputTransform.FreeFormTransform.Node();
+    //            filterParser.Parse(filterFreeform);
+    //            filterParser.RecognizeDataHeader(headers);
+    //        }
+
+    //        Dictionary<string, Item> items = new Dictionary<string, Item>();
+    //        foreach (Row row in input.Rows)
+    //        {
+    //            Item item = new Item();
+    //            item.FeatureVector = row["FeatureVector"].String;
+    //            item.QueryId = row["QueryId"].Long;
+    //            item.Url = row["Url"].String;
+    //            if (string.IsNullOrEmpty(item.FeatureVector) || item.QueryId < 0)
+    //            {
+    //                continue;
+    //            }
+    //            string[] vector = null;
+
+    //            if (filterParser != null || dedupParser != null)
+    //            {
+    //                vector = item.FeatureVector.Split('\t');
+    //            }
+
+    //            if (filterParser != null)
+    //            {
+    //                int filterrank = (int)filterParser.Evaluate(vector);
+    //                if (filterrank <= 0)
+    //                {
+    //                    continue;
+    //                }
+    //            }
+
+    //            if (dedupParser != null)
+    //            {
+    //                double deduprank = dedupParser.Evaluate(vector);
+    //                if (!items.ContainsKey(item.Url))
+    //                {
+    //                    items.Add(item.Url, item);
+    //                }
+    //                else if (items[item.Url].rank < item.rank)
+    //                {
+    //                    items[item.Url] = item;
+    //                }
+    //            }
+    //            else
+    //            {
+    //                outputRow["QueryId"].Set(item.QueryId);
+    //                outputRow["Url"].Set(item.Url);
+    //                outputRow["FeatureVector"].Set(item.FeatureVector);
+    //                yield return outputRow;
+    //            }
+    //        }
+
+    //        foreach (Item item in items.Values)
+    //        {
+    //            outputRow["QueryId"].Set(item.QueryId);
+    //            outputRow["Url"].Set(item.Url);
+    //            outputRow["FeatureVector"].Set(item.FeatureVector);
+    //            yield return outputRow;
+    //        }
+    //    }
+    //}
+
+    // split by query id
+    public class QueryIdSplitter
+    {
+        public const long QueryIdModRange = 256;
+        public static long Caculate(long queryId)
+        {
+            return queryId % QueryIdModRange;
+        }
+    }
+
+    // duplicate lines into pieces
+    public class DupHeaderProcessorLocal : Processor
+    {
+        public override Schema Produces(string[] columns, string[] args, Schema input)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("Idx", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("Header", ColumnDataType.String));
+            return schema;
+        }
+
+        public override IEnumerable<Row> Process(RowSet input, Row outputRow, string[] args)
+        {
+            foreach (Row row in input.Rows)
+            {
+                for (int i = 0; i < QueryIdSplitter.QueryIdModRange; i++)
+                {
+                    string header = row["Header"].String;
+                    outputRow["Idx"].Set(i);
+                    outputRow["Header"].Set(header);
+                    yield return outputRow;
+                }
+            }
+        }
+    } // end of class: DupHeaderProcessor
+
+// *************************************************************************************************/
+// from this is my own code 
+    public class MergeLogReduceExtractor : Extractor
+    {
+        public override Schema Produces(string[] columns, string[] args)
+        {
+            Schema schema = new Schema();
+            schema.Add(new ColumnInfo("Query", ColumnDataType.String));
+            schema.Add(new ColumnInfo("Murl", ColumnDataType.String));
+            schema.Add(new ColumnInfo("Purl", ColumnDataType.String));
+            schema.Add(new ColumnInfo("FeatureCount", ColumnDataType.Long));
+            schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+            return schema;
+        }
+
+        bool ReduceEnabled = false;
+        bool KeepEnabled = false;
+
+        private List<string> ReduceSubstringList = new List<string>();
+        private List<string> KeepSubstringList = new List<string>();
+        private HashSet<string> KeepFeatureMap = new HashSet<string>();
+
+        private long ProcessAndVerifyFeatureVector(string featureVector, out string newFeatureVectorString)
+        {
+            string[] featureColumns = featureVector.Split('\t');
+            newFeatureVectorString = "";
+            StringBuilder newFeatureVector = new StringBuilder();
+            long featureCount = 0;
+            HashSet<string> featureNames = new HashSet<string>();
+            foreach (string pair in featureColumns)
+            {
+                if (!String.IsNullOrEmpty(pair))
+                {
+                    // for all feature, it should be exactly with key and value format
+                    // usually, if any here with wrong format, it must be caused by IFM uploading crap bug
+                    // skip this line
+                    string[] kvPair = pair.Split('=');
+                    if (kvPair == null || kvPair.Length != 2)
+                    {
+                        return 0;
+                    }
+
+                    bool fShouldBeReduced = false;
+                    string key = kvPair[0];
+
+                    // when we found some duplicate feature name,
+                    // this may be cause by IFM uploading crap bug
+                    // skip this line
+                    if (featureNames.Contains(key))
+                    {
+                        return 0;
+                    }
+                    featureNames.Add(key);
+
+                    // not in keep list
+                    // skip directly
+                    if (KeepEnabled && !key.StartsWith("m:"))
+                    {
+                        // if not in keep feature list
+                        // it might be reduced
+                        if (!KeepFeatureMap.Contains(key))
+                        {
+                            fShouldBeReduced = true;
+                            // check sub string list
+                            foreach (string keepString in KeepSubstringList)
+                            {
+                                // if it contains keep sub string
+                                // keep it
+                                if (key.Contains(keepString))
+                                {
+                                    fShouldBeReduced = false;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (fShouldBeReduced)
+                    {
+                        continue;
+                    }
+
+                    // should be reduced, by substring
+                    if (ReduceEnabled && !key.StartsWith("m:"))
+                    {
+                        foreach (string reduceString in ReduceSubstringList)
+                        {
+                            if (key.Contains(reduceString))
+                            {
+                                fShouldBeReduced = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (fShouldBeReduced)
+                    {
+                        continue;
+                    }
+
+                    featureCount++;
+                    newFeatureVector.AppendFormat("{0}\t", pair);
+                }
+            }
+            newFeatureVectorString = newFeatureVector.ToString().TrimEnd('\t');
+            return featureCount;
+        }
+
+        public override IEnumerable<Row> Extract(StreamReader reader, Row output, string[] args)
+        {
+            // load keep and reduce list
+            //LoadKeepReduceList(args[0]);
+
+            //StringBuilder errorLines = new StringBuilder();
+            //int numberOfErrors = 0;
+
+            string line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                string query;
+                string murl;
+                string purl;
+                string featureVector;
+                string errorMessage = "";
+                //schema.Add(new ColumnInfo("Query", ColumnDataType.String));
+                //schema.Add(new ColumnInfo("Murl", ColumnDataType.String));
+                //schema.Add(new ColumnInfo("Purl", ColumnDataType.String));
+                //schema.Add(new ColumnInfo("FeatureCount", ColumnDataType.Long));
+                //schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+                if (IFMLogParser.ParseLine2(line, out query, out murl, out purl, out featureVector, out errorMessage))
+                {
+                    string newFeatureVectorString;
+                    long featureCount = ProcessAndVerifyFeatureVector(featureVector, out newFeatureVectorString);
+                    if (featureCount > 0)
+                    {
+                        output["Query"].Set(query);
+                        output["Murl"].Set(murl);
+                        output["Purl"].Set(purl);
+                        output["FeatureVector"].Set(newFeatureVectorString);
+                        output["FeatureCount"].Set(featureCount);
+                        yield return output;
+                    }
+                }
+                else
+                {
+                    //errorLines.AppendFormat("Error: {0}, Line: {1}\n", errorMessage, line.Substring(0, 250));
+                    //if (++numberOfErrors > 5) // TODO: Make it configurable
+                    //{
+                    //    throw new Exception(errorLines.ToString());
+                    //}
+                }
+            }
+        }
+    } // end of class: IFMLogReduceExtractor
+
+public class MergeLogDedupReducer : Reducer
+{
+    public override Schema Produces(string[] columns, string[] args, Schema input)
+    {
+        Schema schema = new Schema();
+        schema.Add(new ColumnInfo("Query", ColumnDataType.String));
+        schema.Add(new ColumnInfo("Murl", ColumnDataType.String));
+        schema.Add(new ColumnInfo("Purl", ColumnDataType.String));
+        schema.Add(new ColumnInfo("FeatureVector", ColumnDataType.String));
+        return schema;
+    }
+
+    public override IEnumerable<Row> Reduce(RowSet input, Row outputRow, string[] args)
+    {
+        string query = "";
+        string murl = "";
+        string purl = "";
+        string featureVector = "";
+        long featureCount = -1;
+        foreach (Row row in input.Rows)
+        {
+            long curFeatureCount = row["FeatureCount"].Long;
+            if (curFeatureCount > featureCount)
+            {
+                featureCount = curFeatureCount;
+                query = row["Query"].String;
+                murl = row["Murl"].String;
+                purl = row["Purl"].String;
+                featureVector = row["FeatureVector"].String;
+            }
+        }
+
+        if (featureCount > 0)
+        {
+            outputRow["Query"].Set(query);
+            outputRow["Murl"].Set(murl);
+            outputRow["Purl"].Set(purl);
+            outputRow["FeatureVector"].Set(featureVector);
+            yield return outputRow;
+        }
+    }
+}
+
+ // end of class: ExtractionKV2TSVCombiner
+  // Return one single header line, but sort header by its count
+  // intputs: "Header", "HeaderCount"
+  // output: "Header"
+public class MergeSortedHeaderReducer : Reducer
+{
+    class HeaderEntry : IComparable
+    {
+        public HeaderEntry(string name, int count)
+        {
+            HeaderName = name;
+            HeaderCount = count;
+        }
+        public string HeaderName = "";
+        public int HeaderCount = 0;
+        public int CompareTo(object obj)
+        {
+            HeaderEntry other = (HeaderEntry)obj;
+            if (this.HeaderCount == other.HeaderCount)
+            {
+                return this.HeaderName.CompareTo(other.HeaderName);
+            }
+            else
+            {
+                return this.HeaderCount >= other.HeaderCount ? -1 : 1;
+            }
+        }
+    }
+
+    public override Schema Produces(string[] columns, string[] args, Schema input)
+    {
+        return new Schema("Header");
+    }
+
+    public override IEnumerable<Row> Reduce(RowSet input, Row outputRow, string[] args)
+    {
+        Dictionary<String, HeaderEntry> headerList = new Dictionary<string, HeaderEntry>();
+        foreach (Row row in input.Rows)
+        {
+            string header = row["Header"].String;
+            int count = row["HeaderCount"].Integer;
+            if (!headerList.ContainsKey(header))
+            {
+                headerList.Add(header, new HeaderEntry(header, count));
+            }
+            else
+            {
+                headerList[header].HeaderCount += count;
+            }
+        }
+        List<HeaderEntry> headerEntries = new List<HeaderEntry>();
+        foreach (KeyValuePair<string, HeaderEntry> kvp in headerList)
+        {
+            headerEntries.Add(kvp.Value);
+        }
+        // sort the entries
+        headerEntries.Sort();
+        StringBuilder output = new StringBuilder();
+        foreach (HeaderEntry entry in headerEntries)
+        {
+            output.AppendFormat("{0}\t", entry.HeaderName);
+        }
+        outputRow["Header"].Set(output.ToString().TrimEnd('\t'));
+        yield return outputRow;
+    }
+}
+// Convert KV to TSV format
+// Input: QueryId, Query, CanonicalQuery, Url, Rating, Date, Market, ResultType, UrlHash, FeatureVector
+// Output: Url, QueryId, FeatureVector
+public class MergeLogExtractionKV2TSVCombiner : Combiner
+{
+    // feature names <-> location in feature vector
+    Dictionary<string, int> m_szFeatureNames;
+
+    // define of schema
+    const string c_schema_queryHead = "Query";
+    const string c_schema_murlHead = "Murl";
+    const string c_schema_purlHead = "Purl";
+    const string c_schema_featureVector = "FeatureVector";
+
+    public override Schema Produces(
+       string[] columns,
+       string[] args,
+       Schema leftSchema,
+       string leftTable,
+       Schema rightSchema,
+       string rightTable)
+    {
+        return new Schema(new string[] { c_schema_queryHead, c_schema_murlHead, c_schema_purlHead, c_schema_featureVector });
+    }
+
+    private void ParseArg(string[] args)
+    {
+    }
+
+    public override IEnumerable<Row> Combine(RowSet left, RowSet right, Row output, string[] args)
+    {
+        ParseArg(args);
+        // right row has full header information
+        foreach (Row row in right.Rows)
+        {
+            // step1: load full header information
+            string[] fNames = row["Header"].String.Split('\t');
+            if (fNames.Length <= 0)
+            {
+                throw new Exception("read Header error");
+            }
+            m_szFeatureNames = new Dictionary<string, int>();
+            StringBuilder sb = new StringBuilder();
+
+            // decide the sequence of features, "m:" first
+            int nFeat = 0;
+            for (int i = 0; i < fNames.Length; i++)
+            {
+                if (fNames[i].StartsWith("m:") && !m_szFeatureNames.ContainsKey(fNames[i]))
+                {
+                    m_szFeatureNames.Add(fNames[i], nFeat);
+                    nFeat++;
+                }
+            }
+
+            // decide the sequence of features, for the rest except of "m:"
+            for (int i = 0; i < fNames.Length; i++)
+            {
+                if (!fNames[i].StartsWith("m:") && !m_szFeatureNames.ContainsKey(fNames[i]))
+                {
+                    m_szFeatureNames.Add(fNames[i], nFeat);
+                    nFeat++;
+                }
+            }
+
+            string szQuery = null;
+            string szMurl = null;
+            string szPurl = null;
+
+            // output Features
+            string line;
+            foreach (Row leftRow in left.Rows)
+            {
+                line = leftRow[c_schema_featureVector].String;
+                if (string.IsNullOrEmpty(line))
+                {
+                    continue;
+                }
+
+                szQuery = leftRow["Query"].String;
+                szMurl = leftRow["Murl"].String;
+                szPurl = leftRow["Purl"].String;
+
+
+                string[] szFeatureValues = new string[m_szFeatureNames.Count];
+                for (int i = 0; i < m_szFeatureNames.Count; i++)
+                {
+                    szFeatureValues[i] = null;
+                }
+
+                // parse all key-value pairs
+                string[] vitem = line.Split(new char[] { '\t' }, StringSplitOptions.None);
+
+                int countOfFeatures = 0;
+                bool featureHasError = false;
+                for (int i = 0; i < vitem.Length; i++)
+                {
+                    int index = vitem[i].IndexOf('=');
+                    if (index <= 0 || index == vitem[i].Length - 1) continue;
+
+                    string FeatName = vitem[i].Substring(0, index);
+
+                    // only output features in feature name list
+                    if (m_szFeatureNames.ContainsKey(FeatName))
+                    {
+                        string FeatValue = vitem[i].Substring(index + 1);
+                        countOfFeatures++;
+                        szFeatureValues[m_szFeatureNames[FeatName]] = FeatValue;
+                    }
+                }
+
+                if (!featureHasError && countOfFeatures > 0)
+                {
+                    StringBuilder featureStringBuilder = new StringBuilder();
+                    for (int i = 0; i < szFeatureValues.Length; i++)
+                    {
+                        // stop early, if no feature left
+                        if (countOfFeatures == 0) break;
+                        if (!string.IsNullOrEmpty(szFeatureValues[i]))
+                        {
+                            countOfFeatures--;
+                            featureStringBuilder.Append(szFeatureValues[i]);
+                        }
+                        featureStringBuilder.Append('\t');
+                    }
+
+                    featureStringBuilder.Length = featureStringBuilder.Length - 1;
+                    string featureVector = featureStringBuilder.ToString().TrimEnd(new char[] { '\t' });
+
+                    output[c_schema_queryHead].Set(szQuery);
+                    output[c_schema_murlHead].Set(szMurl);
+                    output[c_schema_purlHead].Set(szPurl);
+                    output[c_schema_featureVector].Set(featureVector);
+
+                    yield return output;
+                }
+            }
+        }
+    }
+}
+
+//}
+
+

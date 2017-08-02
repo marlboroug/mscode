@@ -1,0 +1,111 @@
+//Script GUID:5c8a971f-4b41-4551-b547-e6b4610f975b
+//Used for tracking history
+// Get Training Data From OFEMergeLog
+//USING AEther.Extractions.Scope REFERENCE "AEther.Extractions.Scope.dll";
+//USING Aether.Feature.ScopeBin REFERENCE "AEtherCustomExtractor.dll";
+//RESOURCE  "ICSharpCode.SharpZipLib.dll",
+//           "CallHashPartition.dll",
+//           "ComputeHashPartition.dll";        
+//REFERENCE "Microsoft.Bing.HashUtil.dll";
+
+//#DECLARE SourcePath string = "D:\\";
+//#DECLARE StartDate string = "2016-09-06";
+//#DECLARE EndDate string = "2016-09-07";
+//#DECLARE QueryLogDate string = "?date=("+@StartDate+")...("+@EndDate+")&sparsestreamset=true";
+//#DECLARE logInFile string = @SourcePath+"OFEMergedLog_%Y-%m-%d"+@QueryLogDate; 
+//#DECLARE rawloginOutput string = @"D:\testOFEMergeLog\OFEMergedLog_rawlogin.tsv";
+//#DECLARE ifmDedupeOutput string = @"D:\testOFEMergeLog\OFEMergedLog_ifmDedup.tsv";
+//#DECLARE debugOutput string = @"D:\testOFEMergeLog\OFEMergedLog_RawIFMNoFeatur.tsv";
+//#DECLARE featureCountOutput string = @"D:\testOFEMergeLog\OFEMergedLog_featureCount.tsv";
+//#DECLARE headerOutput string = @"D:\testOFEMergeLog\OFEMergedLog_header.tsv";
+//#DECLARE keepReduceFile string = @"D:\testOFEMergeLog\OFEMergedLog_KeepReduce.tsv";
+//#DECLARE resultOutput string = @"D:\testOFEMergeLog\OFEMergedLog_TSV0.tsv";
+//#DECLARE compressOutput string = @"D:\testOFEMergeLog\OFEMergedLog_extraction.tsv";
+
+#DECLARE SourcePath string = "/local/Multimedia/OFE/OFEMergedLog/Tail/";
+#DECLARE StartDate string = "2016-09-05";
+#DECLARE EndDate string = "2016-11-06";
+
+#DECLARE QueryLogDate string = "?date=("+@StartDate+")...("+@EndDate+")&sparsestreamset=true";
+#DECLARE logInFile string = @SourcePath+"OFEMergedLog_%Y-%m-%d.ss"+@QueryLogDate; 
+#DECLARE logOutput string = "/local/users/t-kejia/VirtualMatching/OFEMergeLog/OFEMergeLog_2016";
+#DECLARE logOutputstate string = "/local/users/t-kejia/VirtualMatching/OFEMergeLog/OFEMergeLog_2016_state";
+
+RawIFM = SSTREAM @logInFile;
+RawIFM = SELECT RawQuery, MediaUrl, PageUrl, Features FROM  RawIFM;
+RawIFM = SELECT DISTINCT * FROM RawIFM;
+OUTPUT  RawIFM TO @logOutput;
+RawIFMstate = SELECT "total different querys doc pairs" AS c, COUNT() AS v FROM RawIFM;
+OUTPUT  RawIFMstate TO @logOutputstate;
+
+//
+//#DECLARE rawloginOutput string = @@rawloginOutput@@;
+//#DECLARE ifmDedupeOutput string = @@ifmDedupeOutput@@;
+//#DECLARE debugOutput string = @@debugOutput@@;
+//#DECLARE featureCountOutput string = @@featureCountOutput@@;
+//#DECLARE headerOutput string = @@headerOutput@@;
+//#DECLARE keepReduceFile string = @@keepReduceFile@@;
+//#DECLARE resultOutput string = @@resultOutput@@;
+//#DECLARE compressOutput string = @@compressOutput@@;
+//
+//RESOURCE @"KeepReduce.txt";
+//// Extract IFM infomation
+//
+//RawIFM= EXTRACT Query,Murl,Purl,FeatureCount,FeatureVector
+//FROM @logInFile 
+//USING MergeLogReduceExtractor(); // https://cosmos09.osdinfra.net/cosmos/searchRelevance.aether.store/local/XPdiExtraction/Result/1122888050/EQIFM.log_bucket16?property=info
+//OUTPUT TO @rawloginOutput;// https://cosmos09.osdinfra.net/cosmos/SegmentRelevance/users/yubao/RawIFM.txt?property=info
+//
+//RawIFMNoFeature=SELECT Query, Murl, Purl, FeatureCount
+//FROM RawIFM;
+//OUTPUT RawIFMNoFeature TO @debugOutput;
+//
+////// Dedup and try to keep the one has biggest number of feature values
+////// remove dedup logic for MM
+//IFM=REDUCE RawIFM
+//ON Query, Murl, Purl
+//PRODUCE Query, Murl, Purl, FeatureVector
+//USING MergeLogDedupReducer;
+//OUTPUT TO @ifmDedupeOutput;
+//
+//// Produce Feature Headers, and reduce some features
+//IFMHeaders=PROCESS IFM
+//PRODUCE Header, HeaderCount
+//USING RetriveHeaderProcessorLocal;
+//
+//// Count Herder number
+//SELECT Header, SUM(HeaderCount) AS HeaderCount
+//GROUP BY Header
+//ORDER BY HeaderCount DESC, Header ASC;
+//OUTPUT TO @featureCountOutput;
+//
+//// Append flag for header dedup
+//IFMHeaders = SELECT "1" AS ReduceFlag, Header, HeaderCount FROM IFMHeaders; 
+//
+//// Dedup Header and put them on one line
+//// The headers are sorted with "m:" first and "bigger count" first
+//// When finally generate features, we can trim the end for each extraction end line
+//// Because of moving "important" features ahead, this will help to reduce size of extraction file
+//ReducedHeader = REDUCE IFMHeaders ON ReduceFlag
+//USING MergeSortedHeaderReducer;
+//OUTPUT TO @headerOutput;
+//
+//// expend to N pieces
+//DuplicatedHeader= PROCESS ReducedHeader
+//USING DupHeaderProcessorLocal
+//PRODUCE Idx, Header;
+//OUTPUT TO @keepReduceFile;
+//
+//// convert key=value to TSV format
+//IFM = SELECT (long) 1 AS Idx, IFM.*  FROM IFM;
+//
+//TSV0=COMBINE IFM WITH DuplicatedHeader 
+//ON IFM.Idx == DuplicatedHeader.Idx 
+//USING MergeLogExtractionKV2TSVCombiner;
+//OUTPUT TO @resultOutput;// https://cosmos09.osdinfra.net/cosmos/SegmentRelevance/users/yubao/TSV0.txt?property=info
+//OUTPUT TSV0 TO @compressOutput  ORDER BY Query
+//USING ExtractionOutputterLocal("compress=true");
+//
+
+
+

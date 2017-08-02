@@ -1,0 +1,118 @@
+//Script GUID:225151b9-9398-48ec-8435-9398b7088049
+//Used for tracking history
+
+#DECLARE InputExtraction string = @@InputExtraction@@;
+#DECLARE InputHrspath string = @@InputHrspath@@;
+#DECLARE OutputQueryPath string =  @@OutputQueryPath@@;
+#DECLARE OutputQueryStatePath string =  @@OutputQueryStatePath@@;
+#DECLARE OutputQueryRelePath string =  @@OutputQueryRelePath@@;
+#DECLARE OutputQueryReleStatePath string =  @@OutputQueryReleStatePath@@;
+#DECLARE OutputRelePrecPath string = @@OutputRelePrecPath@@;
+
+//#DECLARE InputExtraction string = "D:/CosmosSamples/data/data/mergeresult";
+//#DECLARE InputHrspath string =  "D:/CosmosSamples/data/data/loss.txt";
+//#DECLARE OutputQueryPath string =  "D:/CosmosSamples/data/data/OutputQueryPath";
+//#DECLARE OutputQueryStatePath string =  "D:/CosmosSamples/data/data/OutputQueryStatePath";
+//#DECLARE OutputQueryRelePath string =  "D:/CosmosSamples/data/data/OutputQueryRelePath";
+//#DECLARE OutputQueryReleStatePath string =  "D:/CosmosSamples/data/data/OutputQueryReleStatePath";
+//#DECLARE OutputRelePrecPath string =  "D:/CosmosSamples/data/data/OutputRelePrecPath";
+
+//extractions  data
+extractionset =
+    SSTREAM @InputExtraction;
+//extractionset = EXTRACT 
+//    query:string, url:string,in1:int,in2:int,in3:int
+//    FROM @InputExtraction
+//    USING DefaultTextExtractor();
+
+
+extractionset =
+    SELECT query,
+           url.Split(new string[]{ " ; ", " : " }, StringSplitOptions.None) [0]AS murl,
+           url.Split(new string[]{ " ; ", " : "}, StringSplitOptions.None) [1]AS purl
+    FROM extractionset;
+
+// hrs data
+nodule = EXTRACT 
+    query:string, purl:string,murl:string,imagerelevanceid:int
+    FROM @InputHrspath
+    USING MyExtractor();
+
+relevdata =
+    SELECT *
+    FROM nodule
+    WHERE imagerelevanceid != 0;
+
+//query
+queryset  = SELECT query , COUNT() AS  querycount FROM extractionset; 
+OUTPUT queryset TO  @OutputQueryPath;
+
+querystate =
+    SELECT "match max count " AS v,
+           (double?) MAX(querycount) AS c
+    FROM queryset
+    UNION ALL
+    SELECT "match min count " AS v,
+           (double?) MIN(querycount) AS c
+    FROM queryset  
+    UNION ALL  
+    SELECT "match average count" AS v, 
+            AVG(querycount) AS c 
+    FROM queryset  
+    UNION ALL  
+    SELECT "total query numbers" AS v, (double?)COUNT() AS c
+    FROM queryset;
+OUTPUT querystate TO  @OutputQueryStatePath;
+
+
+//query and rele
+extarctionrelev = SELECT 
+           extractionset.query,
+           extractionset.murl,
+           extractionset.purl,
+           relevdata.imagerelevanceid  
+        FROM extractionset INNER JOIN relevdata 
+             ON  extractionset.query == relevdata.query 
+             AND extractionset.murl == relevdata.murl 
+             AND extractionset.purl == relevdata.purl;
+
+relevdata =
+    SELECT query,
+           imagerelevanceid,
+           COUNT() AS nodulecount
+    FROM extarctionrelev;
+OUTPUT relevdata TO  @OutputQueryRelePath;
+
+
+relevstate =
+    SELECT "match relev max " AS v,
+           (double?) MAX(nodulecount) AS c
+    FROM relevdata
+    UNION ALL
+    SELECT "match relev min" AS v,
+           (double?) MIN(nodulecount) AS c
+    FROM relevdata  
+    UNION ALL  
+    SELECT "match relev average" AS v, 
+            AVG(nodulecount) AS c 
+    FROM relevdata;
+OUTPUT relevstate TO  @OutputQueryReleStatePath;
+
+
+// query, relevance,precentage
+relevanceprecent =
+    SELECT relevdata.query,
+           relevdata.imagerelevanceid,
+           relevdata.nodulecount,
+           queryset.querycount
+    FROM relevdata
+         INNER JOIN
+             queryset
+         ON relevdata.query == queryset.query;
+relevanceprecent =
+    SELECT query,
+           imagerelevanceid,
+           Util.division(nodulecount, querycount) AS Precentage
+    FROM relevanceprecent; 
+
+OUTPUT relevanceprecent TO  @OutputRelePrecPath;

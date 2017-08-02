@@ -1,0 +1,46 @@
+script guid3727b33e-c56e-4c38-8eda-e0ebc1a04989
+used for tracking history
+
+#DECLARE Inputpath string =  DCosmosSamplesdataSetOpsloss;
+#DECLARE OutputQueryPath string =  DCosmosSamplesdataSetOpsOutputQueryPath;
+#DECLARE OutputQueryStatePath string =  DCosmosSamplesdataSetOpsOutputQueryStatePath;
+#DECLARE OutputQueryRelePath string =  DCosmosSamplesdataSetOpsOutputQueryRelePath;
+#DECLARE OutputQueryReleStatePath string =  DCosmosSamplesdataSetOpsOutputQueryReleStatePath;
+#DECLARE OutputRelePrecPath string =  DCosmosSamplesdataSetOpsOutputRelePrecPath;
+
+Script GUID225151b9-9398-48ec-8435-9398b7088049
+Used for tracking history
+
+#DECLARE InputOFEMergedLog string = localMultimediaOFEOFEMergedLogTailOFEMergedLog_2016-09-06.ss;
+#DECLARE OutputPathss string = sharesSegmentRelevanceSegmentRelevanceuserst-kejiaVirtualMatchingTailOFEMergedLog_%Y-%m-%d.ssdate=(2016-09-06);
+#DECLARE OutputPath string = sharesSegmentRelevanceSegmentRelevanceuserst-kejiaVirtualMatchingTailOFEMergedLog_%Y-%m-%ddate=(2016-09-06);
+#DECLARE OutputPath1ss string = sharesSegmentRelevanceSegmentRelevanceusersyubaoVirtualMatchingTailOFEMergedLog_%Y-%m-%d.ssdate=(2016-09-06);
+#DECLARE OutputPath1 string = sharesSegmentRelevanceSegmentRelevanceusersyubaoVirtualMatchingTailOFEMergedLog_%Y-%m-%ddate=(2016-09-06);
+
+
+extractions  data
+extractionset =
+    SSTREAM @InputOFEMergedLog;
+
+extractionset =
+    SELECT TOP 10 
+    FROM extractionset;
+extractionset =
+    SELECT RawQuery,
+          MediaUrl,
+           PageUrl,
+           Features
+    FROM extractionset;
+
+OUTPUT extractionset TO  @OutputPath;
+OUTPUT extractionset TO  @OutputPath1;
+
+OUTPUT extractionset 
+TO SSTREAM @OutputPathss 
+CLUSTERED BY RawQuery 
+WITH STREAMEXPIRY 90; 
+
+OUTPUT extractionset 
+TO SSTREAM @OutputPath1ss 
+CLUSTERED BY RawQuery 
+WITH STREAMEXPIRY 90; 

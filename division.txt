@@ -1,0 +1,167 @@
+
+
+Database = EXTRACT
+    Key:string, Feature:string
+    FROM "D:/CosmosSamples/data/SetOps/Database.txt"
+    USING DefaultTextExtractor();
+Query = EXTRACT
+    Key:string, Feature:string
+    FROM "D:/CosmosSamples/data/SetOps/query.txt"
+    USING DefaultTextExtractor();
+
+Query =
+    SELECT Key AS QueryKey,
+           Feature AS QueryFeature
+    FROM Query;
+
+JoinedData =
+    SELECT Query.*,
+           Database.*
+    FROM Query
+         CROSS JOIN
+             Database;
+         
+DataandqueryCosine = SELECT JoinedData.*, Util.Cosine(Feature, QueryFeature) AS Distance FROM JoinedData;
+DataandqueryCosine = SELECT QueryKey,Key,QueryFeature, Feature, Distance, ROW_NUMBER() OVER(PARTITION BY QueryKey ORDER BY Distance DESC) AS Match_Position  FROM DataandqueryCosine  HAVING Match_Position<= 2; 
+
+
+DataandqueryEuclidean = SELECT JoinedData.*, Util.Euclidean(Feature, QueryFeature) AS Distance FROM JoinedData;
+DataandqueryEuclidean = SELECT QueryKey,Key,QueryFeature, Feature, Distance, ROW_NUMBER() OVER(PARTITION BY QueryKey ORDER BY Distance ASC) AS Match_Position  FROM DataandqueryEuclidean  HAVING Match_Position<= 2; 
+
+OUTPUT JoinedData TO "D:/CosmosSamples/data/SetOps/JoinedData.txt" USING DefaultTextOutputter();
+OUTPUT DataandqueryCosine TO "D:/CosmosSamples/data/SetOps/DataandqueryCosine.txt" USING DefaultTextOutputter();
+OUTPUT DataandqueryEuclidean TO "D:/CosmosSamples/data/SetOps/DataandqueryEuclidean.txt" USING DefaultTextOutputter();
+
+#CS
+
+public static class Util {
+
+    public static double Cosine(string v1, string v2) {
+        double[] d1 = Array.ConvertAll(v1.Split(':'), double.Parse);   
+        double[] d2 = Array.ConvertAll(v2.Split(':'), double.Parse);        
+        
+        double num = 0;
+        double de1 = 0;
+        double de2 = 0;
+
+        if (d1.Length != d2.Length)
+            throw new Exception("Length Mismatch");
+
+        for (int i = 0; i < d1.Length; i++) {        
+            num += d1[i]*d2[i];
+            de1 += d1[i]*d1[i];
+            de2 += d2[i]*d2[i];
+        }
+        
+        return num / (Math.Sqrt(de1)*Math.Sqrt(de2));
+    }
+
+    public static double Euclidean(string v1, string v2) {
+        double[] d1 = Array.ConvertAll(v1.Split(':'), double.Parse);   
+        double[] d2 = Array.ConvertAll(v2.Split(':'), double.Parse);        
+        
+        double num = 0;
+        double de1 = 0;
+        double de2 = 0;
+
+        if (d1.Length != d2.Length)
+            throw new Exception("Length Mismatch");
+
+        for (int i = 0; i < d1.Length; i++) {        
+            num += (d1[i] - d2[i])*(d1[i] - d2[i]);
+        }
+        
+        return num;
+    }
+    
+
+}
+
+
+#ENDCS
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#DECLARE PARAM_NumNeighbors int = int.Parse(@@PARAM_NumNeighbors@@);
+
+Database = SSTREAM @@DocFeature@@; 
+Query = SSTREAM @@QueryFeature@@;
+Query =
+    SELECT Key AS QueryKey,
+           Feature AS QueryFeature
+    FROM Query;
+
+JoinedData =
+    SELECT Query.*,
+           Database.*
+    FROM Query
+         CROSS JOIN
+             Database;
+         
+DataandqueryCosine = SELECT JoinedData.*, Util.Cosine(Feature, QueryFeature) AS Distance FROM JoinedData;
+DataandqueryCosine = SELECT QueryKey,Key,QueryFeature, Feature, Distance, ROW_NUMBER() OVER(PARTITION BY QueryKey ORDER BY Distance DESC) AS Match_Position  FROM DataandqueryCosine  HAVING Match_Position<= @PARAM_NumNeighbors; 
+OUTPUT DataandqueryCosine TO SSTREAM @@OutputPath@@ HASH CLUSTERED BY QueryKey SORTED BY Query_MUrl_Hash,Match_Position;
+
+DataandqueryEuclidean = SELECT JoinedData.*, Util.Euclidean(Feature, QueryFeature) AS Distance FROM JoinedData;
+DataandqueryEuclidean = SELECT QueryKey,Key,QueryFeature, Feature, Distance, ROW_NUMBER() OVER(PARTITION BY QueryKey ORDER BY Distance ASC) AS Match_Position  FROM DataandqueryEuclidean  HAVING Match_Position<= @PARAM_NumNeighbors; 
+OUTPUT DataandqueryEuclidean TO SSTREAM @@OutputPath@@;
+
+#CS
+public static class Util {
+
+    public static double Cosine(string v1, string v2) {
+        double[] d1 = Array.ConvertAll(v1.Split(':'), double.Parse);   
+        double[] d2 = Array.ConvertAll(v2.Split(':'), double.Parse);        
+        
+        double num = 0;
+        double de1 = 0;
+        double de2 = 0;
+
+        if (d1.Length != d2.Length)
+            throw new Exception("Length Mismatch");
+
+        for (int i = 0; i < d1.Length; i++) {        
+            num += d1[i]*d2[i];
+            de1 += d1[i]*d1[i];
+            de2 += d2[i]*d2[i];
+        }
+        
+        return num / (Math.Sqrt(de1)*Math.Sqrt(de2));
+    }
+
+    public static double Euclidean(string v1, string v2) {
+        double[] d1 = Array.ConvertAll(v1.Split(':'), double.Parse);   
+        double[] d2 = Array.ConvertAll(v2.Split(':'), double.Parse);        
+        
+        double num = 0;
+        double de1 = 0;
+        double de2 = 0;
+
+        if (d1.Length != d2.Length)
+            throw new Exception("Length Mismatch");
+
+        for (int i = 0; i < d1.Length; i++) {        
+            num += (d1[i] - d2[i])*(d1[i] - d2[i]);
+        }
+        
+        return num;
+    }
+   
+}
+
+
+#ENDCS

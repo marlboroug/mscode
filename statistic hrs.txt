@@ -1,0 +1,102 @@
+//script guid:3727b33e-c56e-4c38-8eda-e0ebc1a04989
+//used for tracking history
+
+//#DECLARE Inputpath string =  "D:/CosmosSamples/data/SetOps/loss";
+//#DECLARE OutputQueryPath string =  "D:/CosmosSamples/data/SetOps/OutputQueryPath";
+//#DECLARE OutputQueryStatePath string =  "D:/CosmosSamples/data/SetOps/OutputQueryStatePath";
+//#DECLARE OutputQueryRelePath string =  "D:/CosmosSamples/data/SetOps/OutputQueryRelePath";
+//#DECLARE OutputQueryReleStatePath string =  "D:/CosmosSamples/data/SetOps/OutputQueryReleStatePath";
+//#DECLARE OutputRelePrecPath string =  "D:/CosmosSamples/data/SetOps/OutputRelePrecPath";
+
+#DECLARE Inputpath string = @@InputHrspath@@;
+#DECLARE OutputQueryPath string =  @@OutputQueryPath@@;
+#DECLARE OutputQueryStatePath string =  @@OutputQueryStatePath@@;
+#DECLARE OutputQueryRelePath string =  @@OutputQueryRelePath@@;
+#DECLARE OutputQueryReleStatePath string =  @@OutputQueryReleStatePath@@;
+#DECLARE OutputRelePrecPath string = @@OutputRelePrecPath@@;
+
+nodule = EXTRACT 
+    query:string, purl:string,murl:string,imagerelevanceid:int
+// remember
+    FROM @Inputpath
+    USING MyExtractor();
+
+querydata =
+    SELECT query,
+           purl,
+           murl
+    FROM nodule;
+dedupquerydata =
+    SELECT DISTINCT *
+    FROM querydata;
+dedupquerydata  = SELECT query , COUNT() AS  querycount FROM dedupquerydata; 
+OUTPUT dedupquerydata TO  @OutputQueryPath;
+
+
+querystate =
+    SELECT "match max count " AS v,
+           (double?) MAX(querycount) AS c
+    FROM dedupquerydata
+    UNION ALL
+    SELECT "match min count " AS v,
+           (double?) MIN(querycount) AS c
+    FROM dedupquerydata  
+    UNION ALL  
+    SELECT "match average count" AS v, 
+            AVG(querycount) AS c 
+    FROM dedupquerydata  
+    UNION ALL  
+    SELECT "total query numbers" AS v, (double?)COUNT() AS c
+    FROM dedupquerydata;
+OUTPUT querystate TO  @OutputQueryStatePath;
+
+
+
+relevdata =
+    SELECT *
+    FROM nodule
+    WHERE imagerelevanceid != 0;
+//relevdata =
+//    SELECT DISTINCT *
+//    FROM relevdata;
+relevdata =
+    SELECT query,
+           imagerelevanceid,
+           COUNT() AS nodulecount
+    FROM relevdata;
+OUTPUT relevdata TO  @OutputQueryRelePath;
+
+
+relevstate =
+    SELECT "match relev max " AS v,
+           (double?) MAX(nodulecount) AS c
+    FROM relevdata
+    UNION ALL
+    SELECT "match relev min" AS v,
+           (double?) MIN(nodulecount) AS c
+    FROM relevdata  
+    UNION ALL  
+    SELECT "match relev average" AS v, 
+            AVG(nodulecount) AS c 
+    FROM relevdata;
+OUTPUT relevstate TO  @OutputQueryReleStatePath;
+
+
+querydata  = SELECT query , COUNT() AS  querycount FROM querydata; 
+relevanceprecent =
+    SELECT relevdata.query,
+           relevdata.imagerelevanceid,
+           relevdata.nodulecount,
+           querydata.querycount
+    FROM relevdata
+         INNER JOIN
+             querydata
+         ON relevdata.query == querydata.query;
+relevanceprecent =
+    SELECT query,
+           imagerelevanceid,
+           Util.division(nodulecount, querycount) AS Precentage
+    FROM relevanceprecent; 
+
+OUTPUT relevanceprecent TO  @OutputRelePrecPath;
+

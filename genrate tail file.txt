@@ -1,0 +1,860 @@
+////Script GUID:5c8a971f-4b41-4551-b547-e6b4610f975b
+////Used for tracking history
+//REFERENCE @"OnlineFeatureExtractionLibrary.dll"; 
+//REFERENCE @"OnlineFeatureExtractionLibraryMM.dll"; 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+///// <summary> 
+///// This script extracts online merged log data from a specific date range and/or a specific flight 
+///// 
+///// @owner linzhu 
+///// </summary> 
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Parameters 
+// 
+//// Start date from where to process logs 
+//#DECLARE StartDate string = "2017-07-09"; 
+// 
+//// End date from where to stop processing logs 
+//#DECLARE EndDate string = "2017-07-09"; 
+// 
+//#DECLARE Segment string = "Tail"; // "Tail"; 
+// 
+//// Note that Market is case sensitive. Use 'en-US' for the us market. 
+//#DECLARE Market string = "en-US"; // "en-US"; 
+// 
+//// Depth, how many top results need to be returned. 
+//#DECLARE Depth string = "100000"; 
+// 
+//// The root path where the input log files are located. 
+//// On Cosmos this is currently "/projects/OnlineFeatureExtraction/" 
+//#DECLARE InputLogsFolder string = "/local/Multimedia/OFE/"; 
+// 
+//// Specifies whether the random documents that are logged for each 
+//// query should be included in results. 
+//#DECLARE IncludeRandomDocuments string = "false"; 
+// 
+//// Should we include impressions that do not have any clicks? 
+//#DECLARE IncludeImpressionsWithZeroClick string = "true"; 
+// 
+//// Flights which should be included in results. 
+//// Syntax is <numberline>:<flight-name> (for example flt:rank1) 
+//// If you want to include all flights on a numberline use '*' for flightname, for example, flt:* 
+//// You can also use '*' for prefix match. For example, flt:ir* 
+//// You can use semicolon to specify multiple flights. For example, flt:*;release:* 
+//#DECLARE FlightsFilterPattern string = "muidflt89:ofe89"; // "muidflt89:ofe89"; 
+// 
+//#DECLARE AliasFilterPattern string = string.Format("Image{0}_OFE1_PDI", @Segment); // @@AliasFilterPattern@@ 
+// 
+//// Specifies a ranker to filter the results. 
+//// It can be a full ranker name, such as "en-us\L2-20121206.ini" 
+//// or a substring such as "en-us" 
+//// or "*" for including results from all rankers 
+//// Note that this parameter is not case sensitive 
+//#DECLARE RankersFilterPattern string = "*"; // "Image_L2_2015Dec2_Tail_PDI_ns.ini".ToLower(); 
+// 
+//// These parameter can be used for debugging purposes to perform the  
+//// merge only for a specific TraceId and CacheTraceId. If the values 
+//// are set to '*', all of the TraceIds and CacheTraceIds will be included. 
+//#DECLARE TraceIdFilterPattern string = "*"; 
+//#DECLARE CacheTraceIdFilterPattern string ="*"; 
+// 
+//// Specifies whether errors in the intermediate steps should be dumped 
+//// to output for debugging purposes. Use "true" to enable this feature. 
+//#DECLARE Debug_DumpErrors string = "false".ToLower(); 
+// 
+//// Specifies whether matching lines (those that pass filters on trace id, ranker, ...) 
+//// in the input logs should be dumped to output for debugging purposes.  
+//// Use "true" to enable this feature. 
+//#DECLARE Debug_DumpInputLines string = "false".ToLower(); 
+// 
+//// Specifies whether intermediate outputs should be dumped for  
+//// debugging. Use "true" to enable this feature. 
+//#DECLARE Debug_DumpIntermediateOutputs string = "false".ToLower(); 
+// 
+//// Specifies the level of statistics which should be generated for output. 
+//// Valid values are "none", "summary", "detailed" 
+//#DECLARE Debug_OutputStatisticsLevel string = @"summary".ToLower(); 
+// 
+//// It should be either "tsv" or "kvp". For tsv format we will have line with StatName\tStatValue 
+//// format. For kvp format, we will have single line with Stat1=Value1&Stat2=Value2&... format 
+//#DECLARE Debug_OutputStatisticsFormat string = @"tsv".ToLower(); 
+// 
+//// Specifies whether extra columns that are used only for 
+//// debugging should be included in results. Use "true" to enable this feature. 
+//#DECLARE Debug_IncludeDebuggingColumns string = @"false".ToLower(); 
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Outputs 
+// 
+//// #DECLARE Out_MergeOutput string = string.Format(@InputLogsFolder + "OFEMergedLog/{0}/OFEMergedLog_{1}.ss", @Segment, @StartDate); 
+//#DECLARE Out_MergeOutput string = "/local/Multimedia/OFE/OFEMergedLog/Tail/OFEMergedLog_%Y-%m-%d.ss?date=(2017-07-09)"; 
+//
+//
+//
+//
+//
+//
+//// The folder where all the debug output files will be written to 
+//#DECLARE DebugFolderRoot string = string.Format("/local/Multimedia/OFE/OFEMergedLog/Debug/OFE{0}_{1}/", @Segment, @StartDate); 
+// 
+//#DECLARE Out_SummaryStatistics string = @DebugFolderRoot + "SummaryStats.tsv"; 
+//#DECLARE Out_DetailedStatistics string = @DebugFolderRoot + "DetailedStats.tsv"; 
+// 
+//#DECLARE Out_Errors_QuerySelectionLog string = @DebugFolderRoot + @"Errors/QuerySelectionLog.txt"; 
+//#DECLARE Out_Errors_QueryResultLog string = @DebugFolderRoot + @"Errors/QueryResultLog.txt"; 
+//#DECLARE Out_Errors_QuerySelAndQueryResultMerge string = @DebugFolderRoot + @"Errors/QuerySelAndQueryResultMerge.txt"; 
+//#DECLARE Out_Errors_Extractions string = @DebugFolderRoot + @"Errors/ExtractionsLog.txt"; 
+//#DECLARE Out_Errors_QueryLogsAndExtractionsMerge string = @DebugFolderRoot + @"Errors/QueryLogsAndExtractionsMerge.txt"; 
+//#DECLARE Out_Errors_FinalMerge string = @DebugFolderRoot + @"Errors/FinalMerge.txt"; 
+// 
+//#DECLARE Out_InputLines_QuerySelectionLog string = @DebugFolderRoot + @"InputLines/QuerySelectionLog.txt"; 
+//#DECLARE Out_InputLines_QueryResultLog string = @DebugFolderRoot + @"InputLines/QueryResultLog.txt"; 
+//#DECLARE Out_InputLines_ExtractionsLog string = @DebugFolderRoot + @"InputLines/ExtractionsLog.txt"; 
+//#DECLARE Out_InputLines_FrontDoorLog_Schema string = @DebugFolderRoot + @"InputLines/FrontDoorLogSchema.txt"; 
+//#DECLARE Out_InputLines_FrontDoorLog_Raw string = @DebugFolderRoot + @"InputLines/FrontDoorLogRaw.txt"; 
+// 
+//#DECLARE Out_Intermediate_QuerySelections string = @DebugFolderRoot + @"Intermediate/QuerySelections.tsv"; 
+//#DECLARE Out_Intermediate_QueryResults string = @DebugFolderRoot + @"Intermediate/QueryResults.tsv"; 
+//#DECLARE Out_Intermediate_QuerySelAndQueryResultMerge string = @DebugFolderRoot + @"Intermediate/QuerySelAndQueryResultMerge.tsv"; 
+//#DECLARE Out_Intermediate_Extractions string = @DebugFolderRoot + @"Intermediate/Extractions.tsv"; 
+//#DECLARE Out_Intermediate_QueryLogsAndExtractionsMerge string = @DebugFolderRoot + @"Intermediate/QueryLogsAndExtractionsMerge.tsv"; 
+//#DECLARE Out_Intermediate_ExpandedImpressions string = @DebugFolderRoot + @"Intermediate/ExpandedImpressions.tsv"; 
+// 
+//#DECLARE Out_Intermediate_RawSessions string = @DebugFolderRoot + @"Intermediate/RawSessions.tsv"; 
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// References 
+// 
+//USING OnlineFeatureExtractionLibrary; 
+//USING OnlineFeatureExtractionLibrary.Extractors; 
+//USING OnlineFeatureExtractionLibrary.Combiners; 
+//USING OnlineFeatureExtractionLibrary.Processors; 
+//USING OnlineFeatureExtractionLibrary.Reducers; 
+//USING OnlineFeatureExtractionLibrary.Outputters; 
+// 
+//USING OnlineFeatureExtractionLibraryMM; 
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Log locations 
+// 
+//#IF (LOCAL) 
+// 
+//#ELSE 
+// 
+//// Note that 'sparsestreamset=true' prevents the job from failing if there is no logs for some of the dates in this date range 
+//// #DECLARE QuerySelectionPath string = @InputLogsFolder + @"QuerySelectionLog/?date=" + @StartDate +"..." + @EndDate + "&sparsestreamset=true"; 
+//// #DECLARE QueryResultLogPath string = @InputLogsFolder + @"QueryResultLog/?date=" + @StartDate +"..." + @EndDate + "&sparsestreamset=true"; 
+//// #DECLARE IFMFeaturePath string = @InputLogsFolder + @"OFEIFM/?date=" + @StartDate +"..." + @EndDate + "&sparsestreamset=true"; 
+// 
+//#DECLARE QuerySelectionPath string = "/local/Multimedia/OFE/QuerySelectionLog/?date=(2017-07-09)&sparsestreamset=true"; 
+//#DECLARE QueryResultLogPath string = "/local/Multimedia/OFE/QueryResultLog/?date=(2017-07-09)&sparsestreamset=true"; 
+//#DECLARE IFMFeaturePath string = "/local/Multimedia/OFE/OFEIFM/?date=(2017-07-09)&sparsestreamset=true"; 
+// 
+//#ENDIF 
+// 
+//L1View = 
+//    VIEW "/shares/SegmentRelevance/SegmentRelevance/Multimedia/MMLogs/Views/ImageSmlL1PageView.view" 
+//#IF (LOCAL) 
+//#ELSE 
+//    PARAMS 
+//    ( 
+//        Start = @StartDate, 
+//        End = @EndDate, 
+//        UseSample = false, 
+//        Dimension = "vertical" 
+//    ); 
+//#ENDIF 
+// 
+//RawSessions = 
+//    SELECT // TOP 100 
+//           ClientId, 
+//           User_SessionSequenceNumber, 
+//           Request_ImpressionGuid, 
+//           Request_FrontDoorImpressionEventId, 
+//           FormCode, 
+//           Query_RawQuery, 
+//           Request_RequestTime, 
+//           Page_Experiments, 
+//           Page, 
+//           Vertical, 
+//           Market, 
+//           Query_IsNormal, 
+//           Page_HasClickTracking, 
+//           Reporting_IsEditorial, 
+//           Reporting_IsExplicitTrue, 
+//           Reporting_InLMReport, 
+//           Page_PageNumber, 
+//           Request_Url, 
+//           Request_Events, 
+//           Request_IsMarketingTraffic, 
+//           Request_IsBotVNext, 
+//           Request_IsInternalTraffic, 
+//           Request_EventsWithExtendedProperties 
+//    FROM L1View 
+//    WHERE Vertical == "images" // Add "office" if want office traffic 
+//          AND Market == @Market 
+//          // AND NOT Request_IsMarketingTraffic 
+//          // AND NOT Request_IsBotVNext 
+//          // AND Query_IsNormal 
+//          // AND Page_HasClickTracking 
+//          // AND NOT Reporting_IsEditorial 
+//          // AND Reporting_IsExplicitTrue 
+//          // AND Reporting_InLMReport 
+//          // AND NOT Request_IsInternalTraffic 
+//          // AND Page_PageNumber == 1 // Anti-ClickFraud technique 
+//          // AND Request_EventsWithExtendedProperties.WhereEventTypeEquals("Event.Impression", "Event.PartialImpression.FrontDoor")[0] 
+//          // .ExtendedProperties["RequestInfo/QoS/TrafficPriority/Actual"].ToLower().Trim() == "premium" 
+//          // AND Page_Experiments["muidflt89"].Level == "ofe89" 
+//          ; 
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Extract queries which are selected by IS backend to be logged for OFE 
+// 
+//QuerySelectionLog =  
+//    SELECT TraceId, 
+//           QueryId, 
+//           AugQuery, 
+//           Ranker 
+//    FROM @QuerySelectionPath 
+//    USING QuerySelectionExtractorMM("-rankersFilter",  
+//                                  @RankersFilterPattern, 
+//                                    "-aliasFilter", 
+//                                  @AliasFilterPattern 
+//                                   ); 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Extract results of OFE queries 
+// 
+//QueryResultLog = 
+//    SELECT TraceId, 
+//           QueryId, 
+//           CacheTraceId, 
+//           CacheQueryId, 
+//           DocId, 
+//           DynamicRank 
+//    FROM @QueryResultLogPath 
+//    USING QueryResultLogExtractor();  
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Merge QuerySelection and QueryResult logs 
+// 
+//QuerySelAndQueryResultMerge =  
+//    COMBINE QueryResultLog PRESORT QueryId,  
+//                                   DocId WITH QuerySelectionLog PRESORT QueryId  
+//    ON (QueryResultLog.TraceId == QuerySelectionLog.TraceId) 
+//    PRODUCE TraceId, 
+//            QueryId, 
+//            CacheTraceId, 
+//            CacheQueryId, 
+//            AugQuery, 
+//            Ranker, 
+//            DocId, 
+//            DynamicRank 
+//    USING QueryResQuerySelCombiner(); 
+// 
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Extract feature values that are dumped by OFE backend 
+// 
+//Extractions =  
+//    SELECT TraceId, 
+//           QueryId, 
+//           DocId, 
+//           FeatureMapChecksum, 
+//           Features 
+//    FROM @IFMFeaturePath 
+//    USING IFMFeatureExtractor(); 
+// 
+//
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Merge query logs with extractions 
+// 
+//QueryLogsAndExtractionsMerge =  
+//    COMBINE QuerySelAndQueryResultMerge PRESORT DocId WITH Extractions PRESORT DocId 
+//    ON (QuerySelAndQueryResultMerge.CacheTraceId == Extractions.TraceId  
+//       AND QuerySelAndQueryResultMerge.CacheQueryId == Extractions.QueryId) 
+//    PRODUCE TraceId, 
+//            QueryId, 
+//            AugQuery, 
+//            Ranker, 
+//            DocId, 
+//            DynamicRank, 
+//            FeatureMapChecksum, 
+//            Features, 
+//            IsRandomDocument 
+//    USING QueryLogExtractionCombiner("-includeRandomDocuments", 
+//                                     @IncludeRandomDocuments); 
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Get All Front Door Data 
+//
+//// Expand each input row into N rows equal to the number of web results 
+//ExpandedImpressions =  
+//    PROCESS RawSessions 
+//    PRODUCE ClientId, 
+//            SessionId, 
+//            ImpressionGuid, 
+//            ImpressionEventId, 
+//            FormCode, 
+//            Flight, 
+//            RawQuery, 
+//            FrontDoorTimestamp, 
+//            // NumWebResults, 
+//            NumSearchResults, 
+//            // NumWebResultsWithClicks, 
+//            NumSearchResultsWithClicks, 
+//            // NumClicksOnWebResults, 
+//            NumClicksOnSearchResults, 
+//            MediaUrl, 
+//            PageUrl, 
+//            // Url, 
+//            DocId, 
+//            // Tier, 
+//            ClickCount, 
+//            DwellTime, 
+//            // WebResPos, 
+//            // AbsPos, 
+//            ImageSearchResultPos, 
+//            ClickSeqNo, 
+//            TimeToClick, 
+//            ClickType 
+//            // IsCtrlClick 
+//    USING ImpressionsExpanderMM("-flightsFilter",  
+//                              @FlightsFilterPattern, 
+//                              "-includeImpressionsWithZeroClick", 
+//                              @IncludeImpressionsWithZeroClick, 
+//                              "-market", 
+//                              @Market, 
+//                              "-depth", 
+//                              @Depth); 
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////////// 
+//// Merge Front Door and backend data 
+//// 
+//// Note that it is possible to have multiple QueryIds for the same TraceId. So we will need to 
+//// presort the QueryLogsAndExtractionsMerge based on QueryId and DocId and will need to make 
+//// k pass over ExpandedImpressions if there are k distinct QueryIds on the right side. 
+// 
+//FinalMerge = 
+//    COMBINE ExpandedImpressions PRESORT DocId WITH QueryLogsAndExtractionsMerge PRESORT QueryId,  
+//                                                                                        DocId  
+//    ON (ExpandedImpressions.ImpressionEventId == QueryLogsAndExtractionsMerge.TraceId) 
+//    PRODUCE ClientId, 
+//            SessionId, 
+//            ImpressionGuid, 
+//            ImpressionEventId, 
+//            FormCode, 
+//            Flight, 
+//            RawQuery, 
+//            FrontDoorTimestamp, 
+//            NumSearchResults, 
+//            NumSearchResultsWithClicks, 
+//            NumClicksOnSearchResults, 
+//            MediaUrl, 
+//            PageUrl, 
+//            DocId, 
+//            ClickCount, 
+//            DwellTime, 
+//            ImageSearchResultPos, 
+//            ClickSeqNo, 
+//            TimeToClick, 
+//            ClickType, 
+//             
+//            QueryId, 
+//            AugQuery, 
+//            Ranker, 
+//            FeatureMapChecksum, 
+//            Features, 
+//            DynamicRank, 
+//            IsRandomDocument 
+//
+// 
+//    USING FrontDoorAndBackendCombinerMM("-includeRandomDocuments", 
+//                                      @IncludeRandomDocuments); 
+// 
+//#IF (@Out_MergeOutput != "") 
+// 
+//FinalMergeOutput = 
+//    SELECT ClientId, 
+//        ImpressionGuid, 
+//        ImpressionEventId, 
+//        RawQuery, 
+//        FrontDoorTimestamp, 
+//        MediaUrl, 
+//        PageUrl, 
+//        DocId, 
+//        DwellTime, 
+//        ImageSearchResultPos, 
+//        QueryId, 
+//        FeatureMapChecksum, 
+//        Features, 
+//        DynamicRank 
+//    FROM FinalMerge; 
+// 
+//OUTPUT FinalMergeOutput 
+//TO SSTREAM @Out_MergeOutput 
+//CLUSTERED BY ClientId 
+//SORTED BY ClientId, FrontDoorTimestamp, ImpressionGuid, QueryId, ImageSearchResultPos, DynamicRank DESC 
+//WITH STREAMEXPIRY "90"; 
+//     
+//#ENDIF 
+// 
+/////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Generate summary statistics 
+//// 
+////// FinalMerge = SSTREAM @Out_MergeOutput; 
+//// 
+//////Script GUID:b340c97e-55a0-4a59-b44a-aa8c489783ff
+//////Used for tracking history
+////// merge logs from multiple days
+////#DECLARE StartDate string = @"2016-08-16"; 
+////#DECLARE EndDate string = @"2016-08-30"; 
+////
+////
+////#DECLARE In_OFE_Log_dir string = @"/local/Multimedia/OFE/OFEMergedLog/Generic/";
+////
+////// output
+////#DECLARE OUT_OFE_log_stat string = @"/local/users/lins/WB/V7/OFELogStat_generic_20160816_20160830.tsv";
+////
+////
+////// Agg log 
+////clicklog =   
+////    SSTREAM 
+////     SPARSE STREAMSET @In_OFE_Log_dir
+////
+////PATTERN @"OFEMergedLog_%Y-%m-%d.ss" 
+////RANGE __date = [@StartDate, @EndDate]  ;
+////
+////log =
+////    SELECT DISTINCT RawQuery,
+////                    MediaUrl,
+////                    PageUrl
+////    FROM clicklog;
+////
+////log_query =
+////    SELECT DISTINCT RawQuery
+////    FROM log;
+////
+////log_url =
+////    SELECT DISTINCT MediaUrl,
+////                    PageUrl
+////    FROM log;
+////
+////stat =
+////    SELECT "01 distinct q-d pairs in 20160816_20160830" AS label,
+////           COUNT() AS num
+////    FROM log
+////    UNION ALL
+////    SELECT "02 distinct query in 20160816_20160830" AS label,
+////           COUNT() AS num
+////    FROM log_query
+////    UNION ALL
+////    SELECT "03 distinct doc in 20160816_20160830" AS label,
+////           COUNT() AS num
+////    FROM log_url;
+////
+////OUTPUT
+////TO @OUT_OFE_log_stat;
+
+//////Script GUID:5c8a971f-4b41-4551-b547-e6b4610f975b
+//////Used for tracking history
+////REFERENCE @"OnlineFeatureExtractionLibrary.dll"; 
+////REFERENCE @"OnlineFeatureExtractionLibraryMM.dll"; 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+/////// <summary> 
+/////// This script extracts online merged log data from a specific date range and/or a specific flight 
+/////// 
+/////// @owner linzhu 
+/////// </summary> 
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Parameters 
+//// 
+////// Start date from where to process logs 
+////#DECLARE StartDate string = "2017-07-09"; 
+//// 
+////// End date from where to stop processing logs 
+////#DECLARE EndDate string = "2017-07-09"; 
+//// 
+////#DECLARE Segment string = "Tail"; // "Tail"; 
+//// 
+////// Note that Market is case sensitive. Use 'en-US' for the us market. 
+////#DECLARE Market string = "en-US"; // "en-US"; 
+//// 
+////// Depth, how many top results need to be returned. 
+////#DECLARE Depth string = "100000"; 
+//// 
+////// The root path where the input log files are located. 
+////// On Cosmos this is currently "/projects/OnlineFeatureExtraction/" 
+////#DECLARE InputLogsFolder string = "/local/Multimedia/OFE/"; 
+//// 
+////// Specifies whether the random documents that are logged for each 
+////// query should be included in results. 
+////#DECLARE IncludeRandomDocuments string = "false"; 
+//// 
+////// Should we include impressions that do not have any clicks? 
+////#DECLARE IncludeImpressionsWithZeroClick string = "true"; 
+//// 
+////// Flights which should be included in results. 
+////// Syntax is <numberline>:<flight-name> (for example flt:rank1) 
+////// If you want to include all flights on a numberline use '*' for flightname, for example, flt:* 
+////// You can also use '*' for prefix match. For example, flt:ir* 
+////// You can use semicolon to specify multiple flights. For example, flt:*;release:* 
+////#DECLARE FlightsFilterPattern string = "muidflt89:ofe89"; // "muidflt89:ofe89"; 
+//// 
+////#DECLARE AliasFilterPattern string = string.Format("Image{0}_OFE1_PDI", @Segment); // @@AliasFilterPattern@@ 
+//// 
+////// Specifies a ranker to filter the results. 
+////// It can be a full ranker name, such as "en-us\L2-20121206.ini" 
+////// or a substring such as "en-us" 
+////// or "*" for including results from all rankers 
+////// Note that this parameter is not case sensitive 
+////#DECLARE RankersFilterPattern string = "*"; // "Image_L2_2015Dec2_Tail_PDI_ns.ini".ToLower(); 
+//// 
+////// These parameter can be used for debugging purposes to perform the  
+////// merge only for a specific TraceId and CacheTraceId. If the values 
+////// are set to '*', all of the TraceIds and CacheTraceIds will be included. 
+////#DECLARE TraceIdFilterPattern string = "*"; 
+////#DECLARE CacheTraceIdFilterPattern string ="*"; 
+//// 
+////// Specifies whether errors in the intermediate steps should be dumped 
+////// to output for debugging purposes. Use "true" to enable this feature. 
+////#DECLARE Debug_DumpErrors string = "false".ToLower(); 
+//// 
+////// Specifies whether matching lines (those that pass filters on trace id, ranker, ...) 
+////// in the input logs should be dumped to output for debugging purposes.  
+////// Use "true" to enable this feature. 
+////#DECLARE Debug_DumpInputLines string = "false".ToLower(); 
+//// 
+////// Specifies whether intermediate outputs should be dumped for  
+////// debugging. Use "true" to enable this feature. 
+////#DECLARE Debug_DumpIntermediateOutputs string = "false".ToLower(); 
+//// 
+////// Specifies the level of statistics which should be generated for output. 
+////// Valid values are "none", "summary", "detailed" 
+////#DECLARE Debug_OutputStatisticsLevel string = @"summary".ToLower(); 
+//// 
+////// It should be either "tsv" or "kvp". For tsv format we will have line with StatName\tStatValue 
+////// format. For kvp format, we will have single line with Stat1=Value1&Stat2=Value2&... format 
+////#DECLARE Debug_OutputStatisticsFormat string = @"tsv".ToLower(); 
+//// 
+////// Specifies whether extra columns that are used only for 
+////// debugging should be included in results. Use "true" to enable this feature. 
+////#DECLARE Debug_IncludeDebuggingColumns string = @"false".ToLower(); 
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Outputs 
+//// 
+////// #DECLARE Out_MergeOutput string = string.Format(@InputLogsFolder + "OFEMergedLog/{0}/OFEMergedLog_{1}.ss", @Segment, @StartDate); 
+////#DECLARE Out_MergeOutput string = "/shares/SegmentRelevance/SegmentRelevance/users/yubao/VirtualMatching/Tail/OFEMergedLog_%Y-%m-%d.ss?date=(2017-07-09)"; 
+//// 
+////// The folder where all the debug output files will be written to 
+////#DECLARE DebugFolderRoot string = string.Format("/local/Multimedia/OFE/OFEMergedLog/Debug/OFE{0}_{1}/", @Segment, @StartDate); 
+//// 
+////#DECLARE Out_SummaryStatistics string = @DebugFolderRoot + "SummaryStats.tsv"; 
+////#DECLARE Out_DetailedStatistics string = @DebugFolderRoot + "DetailedStats.tsv"; 
+//// 
+////#DECLARE Out_Errors_QuerySelectionLog string = @DebugFolderRoot + @"Errors/QuerySelectionLog.txt"; 
+////#DECLARE Out_Errors_QueryResultLog string = @DebugFolderRoot + @"Errors/QueryResultLog.txt"; 
+////#DECLARE Out_Errors_QuerySelAndQueryResultMerge string = @DebugFolderRoot + @"Errors/QuerySelAndQueryResultMerge.txt"; 
+////#DECLARE Out_Errors_Extractions string = @DebugFolderRoot + @"Errors/ExtractionsLog.txt"; 
+////#DECLARE Out_Errors_QueryLogsAndExtractionsMerge string = @DebugFolderRoot + @"Errors/QueryLogsAndExtractionsMerge.txt"; 
+////#DECLARE Out_Errors_FinalMerge string = @DebugFolderRoot + @"Errors/FinalMerge.txt"; 
+//// 
+////#DECLARE Out_InputLines_QuerySelectionLog string = @DebugFolderRoot + @"InputLines/QuerySelectionLog.txt"; 
+////#DECLARE Out_InputLines_QueryResultLog string = @DebugFolderRoot + @"InputLines/QueryResultLog.txt"; 
+////#DECLARE Out_InputLines_ExtractionsLog string = @DebugFolderRoot + @"InputLines/ExtractionsLog.txt"; 
+////#DECLARE Out_InputLines_FrontDoorLog_Schema string = @DebugFolderRoot + @"InputLines/FrontDoorLogSchema.txt"; 
+////#DECLARE Out_InputLines_FrontDoorLog_Raw string = @DebugFolderRoot + @"InputLines/FrontDoorLogRaw.txt"; 
+//// 
+////#DECLARE Out_Intermediate_QuerySelections string = @DebugFolderRoot + @"Intermediate/QuerySelections.tsv"; 
+////#DECLARE Out_Intermediate_QueryResults string = @DebugFolderRoot + @"Intermediate/QueryResults.tsv"; 
+////#DECLARE Out_Intermediate_QuerySelAndQueryResultMerge string = @DebugFolderRoot + @"Intermediate/QuerySelAndQueryResultMerge.tsv"; 
+////#DECLARE Out_Intermediate_Extractions string = @DebugFolderRoot + @"Intermediate/Extractions.tsv"; 
+////#DECLARE Out_Intermediate_QueryLogsAndExtractionsMerge string = @DebugFolderRoot + @"Intermediate/QueryLogsAndExtractionsMerge.tsv"; 
+////#DECLARE Out_Intermediate_ExpandedImpressions string = @DebugFolderRoot + @"Intermediate/ExpandedImpressions.tsv"; 
+//// 
+////#DECLARE Out_Intermediate_RawSessions string = @DebugFolderRoot + @"Intermediate/RawSessions.tsv"; 
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// References 
+//// 
+////USING OnlineFeatureExtractionLibrary; 
+////USING OnlineFeatureExtractionLibrary.Extractors; 
+////USING OnlineFeatureExtractionLibrary.Combiners; 
+////USING OnlineFeatureExtractionLibrary.Processors; 
+////USING OnlineFeatureExtractionLibrary.Reducers; 
+////USING OnlineFeatureExtractionLibrary.Outputters; 
+//// 
+////USING OnlineFeatureExtractionLibraryMM; 
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Log locations 
+//// 
+////#IF (LOCAL) 
+//// 
+////#ELSE 
+//// 
+////// Note that 'sparsestreamset=true' prevents the job from failing if there is no logs for some of the dates in this date range 
+////// #DECLARE QuerySelectionPath string = @InputLogsFolder + @"QuerySelectionLog/?date=" + @StartDate +"..." + @EndDate + "&sparsestreamset=true"; 
+////// #DECLARE QueryResultLogPath string = @InputLogsFolder + @"QueryResultLog/?date=" + @StartDate +"..." + @EndDate + "&sparsestreamset=true"; 
+////// #DECLARE IFMFeaturePath string = @InputLogsFolder + @"OFEIFM/?date=" + @StartDate +"..." + @EndDate + "&sparsestreamset=true"; 
+//// 
+////#DECLARE QuerySelectionPath string = "/local/Multimedia/OFE/QuerySelectionLog/?date=(2017-07-09)&sparsestreamset=true"; 
+////#DECLARE QueryResultLogPath string = "/local/Multimedia/OFE/QueryResultLog/?date=(2017-07-09)&sparsestreamset=true"; 
+////#DECLARE IFMFeaturePath string = "/local/Multimedia/OFE/OFEIFM/?date=(2017-07-09)&sparsestreamset=true"; 
+//// 
+////#ENDIF 
+//// 
+////L1View = 
+////    VIEW "/shares/SegmentRelevance/SegmentRelevance/Multimedia/MMLogs/Views/ImageSmlL1PageView.view" 
+////#IF (LOCAL) 
+////#ELSE 
+////    PARAMS 
+////    ( 
+////        Start = @StartDate, 
+////        End = @EndDate, 
+////        UseSample = false, 
+////        Dimension = "vertical" 
+////    ); 
+////#ENDIF 
+//// 
+////RawSessions = 
+////    SELECT // TOP 100 
+////           ClientId, 
+////           User_SessionSequenceNumber, 
+////           Request_ImpressionGuid, 
+////           Request_FrontDoorImpressionEventId, 
+////           FormCode, 
+////           Query_RawQuery, 
+////           Request_RequestTime, 
+////           Page_Experiments, 
+////           Page, 
+////           Vertical, 
+////           Market, 
+////           Query_IsNormal, 
+////           Page_HasClickTracking, 
+////           Reporting_IsEditorial, 
+////           Reporting_IsExplicitTrue, 
+////           Reporting_InLMReport, 
+////           Page_PageNumber, 
+////           Request_Url, 
+////           Request_Events, 
+////           Request_IsMarketingTraffic, 
+////           Request_IsBotVNext, 
+////           Request_IsInternalTraffic, 
+////           Request_EventsWithExtendedProperties 
+////    FROM L1View 
+////    WHERE Vertical == "images" // Add "office" if want office traffic 
+////          AND Market == @Market 
+////          // AND NOT Request_IsMarketingTraffic 
+////          // AND NOT Request_IsBotVNext 
+////          // AND Query_IsNormal 
+////          // AND Page_HasClickTracking 
+////          // AND NOT Reporting_IsEditorial 
+////          // AND Reporting_IsExplicitTrue 
+////          // AND Reporting_InLMReport 
+////          // AND NOT Request_IsInternalTraffic 
+////          // AND Page_PageNumber == 1 // Anti-ClickFraud technique 
+////          // AND Request_EventsWithExtendedProperties.WhereEventTypeEquals("Event.Impression", "Event.PartialImpression.FrontDoor")[0] 
+////          // .ExtendedProperties["RequestInfo/QoS/TrafficPriority/Actual"].ToLower().Trim() == "premium" 
+////          // AND Page_Experiments["muidflt89"].Level == "ofe89" 
+////          ; 
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Extract queries which are selected by IS backend to be logged for OFE 
+//// 
+////QuerySelectionLog =  
+////    SELECT TraceId, 
+////           QueryId, 
+////           AugQuery, 
+////           Ranker 
+//////attention
+////    FROM @QuerySelectionPath 
+////    USING QuerySelectionExtractorMM("-rankersFilter",  
+////                                  @RankersFilterPattern, 
+////                                    "-aliasFilter", 
+////                                  @AliasFilterPattern 
+////                                   ); 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Extract results of OFE queries 
+//// 
+////QueryResultLog = 
+////    SELECT TraceId, 
+////           QueryId, 
+////           CacheTraceId, 
+////           CacheQueryId, 
+////           DocId, 
+////           DynamicRank 
+////    FROM @QueryResultLogPath 
+////    USING QueryResultLogExtractor();  
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Merge QuerySelection and QueryResult logs 
+//// 
+////QuerySelAndQueryResultMerge =  
+////    COMBINE QueryResultLog PRESORT QueryId,  
+////                                   DocId WITH QuerySelectionLog PRESORT QueryId  
+////    ON (QueryResultLog.TraceId == QuerySelectionLog.TraceId) 
+////    PRODUCE TraceId, 
+////            QueryId, 
+////            CacheTraceId, 
+////            CacheQueryId, 
+////            AugQuery, 
+////            Ranker, 
+////            DocId, 
+////            DynamicRank 
+////    USING QueryResQuerySelCombiner(); 
+//// 
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Extract feature values that are dumped by OFE backend 
+//// 
+////Extractions =  
+////    SELECT TraceId, 
+////           QueryId, 
+////           DocId, 
+////           FeatureMapChecksum, 
+////           Features 
+////    FROM @IFMFeaturePath 
+////    USING IFMFeatureExtractor(); 
+//// 
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Merge query logs with extractions 
+//// 
+////QueryLogsAndExtractionsMerge =  
+////    COMBINE QuerySelAndQueryResultMerge PRESORT DocId WITH Extractions PRESORT DocId 
+////    ON (QuerySelAndQueryResultMerge.CacheTraceId == Extractions.TraceId  
+////       AND QuerySelAndQueryResultMerge.CacheQueryId == Extractions.QueryId) 
+////    PRODUCE TraceId, 
+////            QueryId, 
+////            AugQuery, 
+////            Ranker, 
+////            DocId, 
+////            DynamicRank, 
+////            FeatureMapChecksum, 
+////            Features, 
+////            IsRandomDocument 
+////    USING QueryLogExtractionCombiner("-includeRandomDocuments", 
+////                                     @IncludeRandomDocuments); 
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Get All Front Door Data 
+////
+////// Expand each input row into N rows equal to the number of web results 
+////ExpandedImpressions =  
+////    PROCESS RawSessions 
+////    PRODUCE ClientId, 
+////            SessionId, 
+////            ImpressionGuid, 
+////            ImpressionEventId, 
+////            FormCode, 
+////            Flight, 
+////            RawQuery, 
+////            FrontDoorTimestamp, 
+////            // NumWebResults, 
+////            NumSearchResults, 
+////            // NumWebResultsWithClicks, 
+////            NumSearchResultsWithClicks, 
+////            // NumClicksOnWebResults, 
+////            NumClicksOnSearchResults, 
+////            MediaUrl, 
+////            PageUrl, 
+////            // Url, 
+////            DocId, 
+////            // Tier, 
+////            ClickCount, 
+////            DwellTime, 
+////            // WebResPos, 
+////            // AbsPos, 
+////            ImageSearchResultPos, 
+////            ClickSeqNo, 
+////            TimeToClick, 
+////            ClickType 
+////            // IsCtrlClick 
+////    USING ImpressionsExpanderMM("-flightsFilter",  
+////                              @FlightsFilterPattern, 
+////                              "-includeImpressionsWithZeroClick", 
+////                              @IncludeImpressionsWithZeroClick, 
+////                              "-market", 
+////                              @Market, 
+////                              "-depth", 
+////                              @Depth); 
+//// 
+///////////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Merge Front Door and backend data 
+////// 
+////// Note that it is possible to have multiple QueryIds for the same TraceId. So we will need to 
+////// presort the QueryLogsAndExtractionsMerge based on QueryId and DocId and will need to make 
+////// k pass over ExpandedImpressions if there are k distinct QueryIds on the right side. 
+//// 
+////FinalMerge = 
+////    COMBINE ExpandedImpressions PRESORT DocId WITH QueryLogsAndExtractionsMerge PRESORT QueryId,  
+////                                                                                        DocId  
+////    ON (ExpandedImpressions.ImpressionEventId == QueryLogsAndExtractionsMerge.TraceId) 
+////    PRODUCE ClientId, 
+////            SessionId, 
+////            ImpressionGuid, 
+////            ImpressionEventId, 
+////            FormCode, 
+////            Flight, 
+////            RawQuery, 
+////            FrontDoorTimestamp, 
+////            NumSearchResults, 
+////            NumSearchResultsWithClicks, 
+////            NumClicksOnSearchResults, 
+////            MediaUrl, 
+////            PageUrl, 
+////            DocId, 
+////            ClickCount, 
+////            DwellTime, 
+////            ImageSearchResultPos, 
+////            ClickSeqNo, 
+////            TimeToClick, 
+////            ClickType, 
+////             
+////            QueryId, 
+////            AugQuery, 
+////            Ranker, 
+////            FeatureMapChecksum, 
+////            Features, 
+////            DynamicRank, 
+////            IsRandomDocument 
+////
+//// 
+////    USING FrontDoorAndBackendCombinerMM("-includeRandomDocuments", 
+////                                      @IncludeRandomDocuments); 
+//// 
+////#IF (@Out_MergeOutput != "") 
+//// 
+////FinalMergeOutput = 
+////    SELECT ClientId, 
+////        ImpressionGuid, 
+////        ImpressionEventId, 
+////        RawQuery, 
+////        FrontDoorTimestamp, 
+////        MediaUrl, 
+////        PageUrl, 
+////        DocId, 
+////        DwellTime, 
+////        ImageSearchResultPos, 
+////        QueryId, 
+////        FeatureMapChecksum, 
+////        Features, 
+////        DynamicRank 
+////    FROM FinalMerge; 
+//// 
+////OUTPUT FinalMergeOutput 
+////TO SSTREAM @Out_MergeOutput 
+////CLUSTERED BY ClientId 
+////SORTED BY ClientId, FrontDoorTimestamp, ImpressionGuid, QueryId, ImageSearchResultPos, DynamicRank DESC 
+////WITH STREAMEXPIRY "90"; 
+////     
+////#ENDIF 
+//// 
+/////////////////////////////////////////////////////////////////////////////////////////////////// 
+////// Generate summary statistics 
+////
+////
+////// Generated by ScopeStudio, version 2.1.6000.3
