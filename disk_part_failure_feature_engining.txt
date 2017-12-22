@@ -1,0 +1,211 @@
+REFERENCE @"C:\Users\v-kecjia\Documents\Visual Studio 2015\Projects\datafeatureengining\DiskFaultLib.dll";
+REFERENCE @"C:\Users\v-kecjia\Documents\Visual Studio 2015\Projects\datafeatureengining\MathNet.Numerics.dll";
+//Script GUID:14b814e6-0614-4a60-939b-6c4d4e4dbb18
+//Used for tracking history
+#DECLARE InputPath string =  @"/users/ranyao/DiskFailurePrediction/SMARTEventSeqForTrainingIntersectSlopePosNeg_List.ss";
+
+SMARTEventForTraining =
+    SSTREAM @InputPath;
+
+#DECLARE TimeSeriesColumns string = "SmartAttribute_Current_Pending_Sector_RAW_VALUE,SmartAttribute_Current_Pending_Sector_VALUE,SmartAttribute_Erase_Fail_Count_Total_RAW_VALUE,SmartAttribute_Erase_Fail_Count_Total_VALUE,SmartAttribute_Load_Cycle_Count_RAW_VALUE,SmartAttribute_Load_Cycle_Count_VALUE,SmartAttribute_Offline_Uncorrectable_RAW_VALUE,SmartAttribute_Offline_Uncorrectable_VALUE,SmartAttribute_Power_Off_Retract_Count_RAW_VALUE,SmartAttribute_Power_Off_Retract_Count_VALUE,SmartAttribute_Power_Cycle_Count_RAW_VALUE,SmartAttribute_Power_Cycle_Count_VALUE,SmartAttribute_Power_On_Hours_RAW_VALUE,SmartAttribute_Power_On_Hours_VALUE,SmartAttribute_Program_Fail_Cnt_Total_RAW_VALUE,SmartAttribute_Program_Fail_Cnt_Total_VALUE,SmartAttribute_Raw_Read_Error_Rate_RAW_VALUE,SmartAttribute_Raw_Read_Error_Rate_VALUE,SmartAttribute_Reallocated_Event_Count_RAW_VALUE,SmartAttribute_Reallocated_Event_Count_VALUE,SmartAttribute_Reallocated_Sector_Ct_RAW_VALUE,SmartAttribute_Reallocated_Sector_Ct_VALUE,SmartAttribute_Runtime_Bad_Block_RAW_VALUE,SmartAttribute_Runtime_Bad_Block_VALUE,SmartAttribute_Seek_Error_Rate_RAW_VALUE,SmartAttribute_Seek_Error_Rate_VALUE,SmartAttribute_Seek_Time_Performance_RAW_VALUE,SmartAttribute_Seek_Time_Performance_VALUE,SmartAttribute_Spin_Retry_Count_RAW_VALUE,SmartAttribute_Spin_Retry_Count_VALUE,SmartAttribute_Spin_Up_Time_RAW_VALUE,SmartAttribute_Spin_Up_Time_VALUE,SmartAttribute_Start_Stop_Count_RAW_VALUE,SmartAttribute_Start_Stop_Count_VALUE,SmartAttribute_Temperature_Celsius_RAW_VALUE,SmartAttribute_Temperature_Celsius_VALUE,SmartAttribute_Throughput_Performance_RAW_VALUE,SmartAttribute_Throughput_Performance_VALUE,SmartAttribute_UDMA_CRC_Error_Count_RAW_VALUE,SmartAttribute_UDMA_CRC_Error_Count_VALUE,SmartAttribute_Unused_Rsvd_Blk_Cnt_Tot_RAW_VALUE,SmartAttribute_Unused_Rsvd_Blk_Cnt_Tot_VALUE,SmartAttribute_Used_Rsvd_Blk_Cnt_Tot_RAW_VALUE,SmartAttribute_Used_Rsvd_Blk_Cnt_Tot_VALUE,SmartAttribute_Wear_Leveling_Count_RAW_VALUE,SmartAttribute_Wear_Leveling_Count_VALUE";
+SMARTEventForTraining =
+    PROCESS SMARTEventForTraining
+    USING TimeSeriesProcessor2(timeSeriesColumns: @TimeSeriesColumns, nullValueToRemove: - 1);
+
+OUTPUT SMARTEventForTraining
+TO SSTREAM @"/my/DiskFailurePrediction/SMARTEventSeqForTrainingIntersectSlopePosNeg_AddDiff.ss";
+
+OUTPUT SMARTEventForTraining
+TO @"/my/DiskFailurePrediction/SMARTEventSeqForTrainingIntersectSlopePosNeg_AddDiff.tsv";
+#CS
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using MathNet.Numerics;
+using ScopeRuntime;
+
+public class TimeSeriesProcessor2 : Processor
+{
+    private HashSet<string> timeSeriesColumns;
+    private double nullValueToRemove;
+
+    public TimeSeriesProcessor2(string timeSeriesColumns = "", double nullValueToRemove = -1)
+    {
+        this.timeSeriesColumns = new HashSet<string>(timeSeriesColumns.Split(',').Select(x => x.Trim()));
+        this.nullValueToRemove = nullValueToRemove;
+    }
+
+    public override bool RowLevelProcessor
+    {
+        get
+        {
+            return true;
+        }
+    }
+
+    public override bool RunSingleThreaded
+    {
+        get
+        {
+            return false;
+        }
+    }
+
+    public override Schema Produces(string[] columns, string[] args, ScopeRuntime.Schema input)
+    {
+        Schema outputSchema = new Schema();
+
+        foreach (var inputCol in input.Columns)
+        {
+            if (!this.timeSeriesColumns.Contains(inputCol.Name))
+            {
+                outputSchema.Add(inputCol);
+            }
+            else
+            {
+                outputSchema.Add(new ColumnInfo(inputCol.Name + "_LatestValue", typeof(double?)));
+                outputSchema.Add(new ColumnInfo(inputCol.Name + "_Intercept", typeof(double?)));
+                outputSchema.Add(new ColumnInfo(inputCol.Name + "_Slope", typeof(double?)));
+                outputSchema.Add(new ColumnInfo(inputCol.Name + "_Diffa", typeof(double?)));
+                outputSchema.Add(new ColumnInfo(inputCol.Name + "_Diffb", typeof(double?)));
+                outputSchema.Add(new ColumnInfo(inputCol.Name + "_Diffc", typeof(double?)));
+                //outputSchema.AddRange(GetFeatureSchmaFromTimeSeries(inputCol));
+            }
+        }
+
+        return outputSchema;
+    }
+
+    public override IEnumerable<Row> Process(RowSet input, Row outputRow, string[] args)
+    {
+        Schema inputSchema = input.Schema;
+
+        foreach (var input_row in input.Rows)
+        {
+            foreach (var col in inputSchema.Columns)
+            {
+                if (!this.timeSeriesColumns.Contains(col.Name))
+                {
+                    outputRow[col.Name].Set(input_row[col.Name].Value);
+                }
+                else
+                {
+                    double[] seqData = input_row[col.Name].String.Split(',').Select(x => double.Parse(x.Trim())).Where(x => x != this.nullValueToRemove).ToArray();
+
+                    if (seqData.Length == 0)
+                    {
+                        SetOutputValue(outputRow, col.Name, (double?)null, (double?)null, (double?)null, (double?)null, (double?)null, (double?)null);
+                    }
+
+                    if (seqData.Length == 1)
+                    {
+                        SetOutputValue(outputRow, col.Name, seqData[0], seqData[0], 0.0, 0.0, 0.0, 0.0);
+                    }
+
+                    if (seqData.Length > 1)
+                    {
+                        double[] xData = Enumerable.Range(0, seqData.Length).Select(x => (double)x).ToArray();
+                        var coeff = Fit.Line(xData, seqData);
+                        double Diffa = this.nullValueToRemove, Diffb = this.nullValueToRemove, Diffc = this.nullValueToRemove;
+                        if (seqData.Length >= 30)
+                        {
+                            Diffa = seqData[seqData.Length - 1] - seqData[seqData.Length - 1 - 29];
+                        }
+                        if (seqData.Length >= 60)
+                        {
+                            Diffb = seqData[seqData.Length - 1] - seqData[seqData.Length - 1 - 59];
+                        }
+                        if (seqData.Length >= 100)
+                        {
+                            Diffc = seqData[seqData.Length - 1] - seqData[seqData.Length - 1 - 99];
+                        }
+                        SetOutputValue(outputRow, col.Name, seqData[seqData.Length - 1], coeff.Item1, coeff.Item2, Diffa, Diffb, Diffc);
+                    }
+                }
+            }
+
+            yield return outputRow;
+        }
+    }
+
+    private static void SetOutputValue(Row outputRow, string prefixName, double? latestValue, double? intercept, double? slope, double? Diffa, double? Diffb, double? Diffc)
+    {
+        outputRow[string.Format("{0}_{1}", prefixName, "LatestValue")].Set(latestValue);
+        outputRow[string.Format("{0}_{1}", prefixName, "Intercept")].Set(intercept);
+        outputRow[string.Format("{0}_{1}", prefixName, "Slope")].Set(slope);
+        outputRow[string.Format("{0}_{1}", prefixName, "Diffa")].Set(Diffa);
+        outputRow[string.Format("{0}_{1}", prefixName, "Diffb")].Set(Diffb);
+        outputRow[string.Format("{0}_{1}", prefixName, "Diffc")].Set(Diffc);
+        return;
+    }
+
+    private static Type GetNullableType(Type t)
+    {
+        // Abort if no type supplied
+        if (t == null)
+        {
+            return null;
+        }
+
+        // If the given type is already nullable, just return it
+        if (IsTypeNullable(t))
+        {
+            return t;
+        }
+
+        // If the type is a ValueType and is not System.Void, convert it to a Nullable<Type>
+        if (t.IsValueType && t != typeof(void))
+        {
+            return typeof(Nullable<>).MakeGenericType(t);
+        }
+
+        // Done - no conversion
+        return null;
+    }
+
+    private static bool IsTypeNullable(Type t)
+    {
+        // Abort if no type supplied
+        if (t == null)
+        {
+            return false;
+        }
+
+        // If this is not a value type, it is a reference type, so it is automatically nullable
+        //  (NOTE: All forms of Nullable<T> are value types)
+        if (!t.IsValueType)
+        {
+            return true;
+        }
+
+        // Report whether an underlying Type exists (if it does, TypeToTest is a nullable Type)
+        return Nullable.GetUnderlyingType(t) != null;
+    }
+
+    //private static IEnumerable<ColumnInfo> GetFeatureSchmaFromTimeSeries(ColumnInfo inputCol)
+    //{
+    //    string name = inputCol.Name;
+    //    var features = SchemaHelper.GetSchema(new TimeSeriesFeature());
+    //    var cols = features.Select(x => new ColumnInfo(string.Format("{0}_{1}", name, x.Item1), GetNullableType(x.Item2))).ToArray();
+    //    return cols;
+    //}
+}
+
+//public class TimeSeriesFeature
+//{
+//    public double LatestValue { get; set; }
+
+//    public double Intercept { get; set; }
+
+//    public double Slope { get; set; }
+
+//    public double Diffa { get; set; }
+
+//    public double Diffb { get; set; }
+
+//    public double Diffc { get; set; }
+//}
+
+#ENDCS
+
+// Generated by ScopeStudio, version 2.3.1000.1
